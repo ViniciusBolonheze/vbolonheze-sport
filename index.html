@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VBolonheze Sports — Gestão Esportiva</title>
+    <meta name="description" content="VBolonheze Sports: gestão esportiva com armazenamento local no dispositivo.">
+    <link rel="icon" type="image/svg+xml" href="sa-logo.svg">
+    <link rel="shortcut icon" type="image/svg+xml" href="sa-logo.svg">
+    <link rel="apple-touch-icon" href="sa-logo.svg">
+    <meta name="theme-color" content="#173b59">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; base-uri 'self'; object-src 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' data: blob:; media-src 'self' data: blob:; frame-src 'self' about: data: blob:; worker-src 'self' blob:">
+    <link rel="stylesheet" href="style.css?v=sa-local-v14-athlete-photo-json-100kb-20261102">
+    <!-- Bibliotecas empacotadas localmente para uso com ou sem internet -->
+    <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
+    <script src="vendor/xlsx.full.min.js"></script>
+    <script src="vendor/jspdf.umd.min.js"></script>
+    <script src="vendor/html2pdf.bundle.min.js"></script>
+    <style>
+        /* Estilos do Pop-up (Ficha do Atleta) */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.6); justify-content: center; align-items: center; z-index: 9999; }
+        .modal-container { background-color: #fff; width: 90%; max-width: 500px; border-radius: 10px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.3); border: 3px solid #40b8a8; }
+        .modal-header { background-color: #173b59; color: #40b8a8; padding: 15px; text-align: center; position: relative; }
+        .modal-header h2 { margin: 0; font-size: 1.2rem; text-transform: uppercase; }
+        .close-btn { position: absolute; right: 15px; top: 12px; color: #fff; font-size: 1.5rem; cursor: pointer; }
+        .modal-body { padding: 20px; color: #333; }
+        .player-profile { display: flex; gap: 15px; align-items: center; border-bottom: 2px solid #eee; padding-bottom: 15px; margin-bottom: 15px; }
+        .player-photo { width: 110px; height: 140px; object-fit: cover; border: 2px solid #ccc; border-radius: 6px; }
+        .player-details h3 { margin: 0 0 5px 0; color: #173b59; font-size: 1.1rem; }
+        .player-details p { margin: 4px 0; font-size: 0.9rem; }
+        .metrics-section h4 { background-color: #f4f4f4; padding: 8px; margin: 0 0 10px 0; font-size: 0.95rem; color: #173b59; text-align: center; border-left: 4px solid #173b59; }
+        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.85rem; margin-bottom: 10px; }
+        .metric-item { background: #fafafa; padding: 6px 10px; border-radius: 4px; border: 1px solid #e0e0e0; }
+        .predicted-height { text-align: center; font-weight: bold; color: #173b59; margin: 10px 0 15px 0; font-size: 0.95rem; }
+        .modal-footer { background-color: #f9f9f9; padding: 12px; font-size: 0.8rem; border-top: 1px solid #ddd; color: #555; }
+        .modal-footer p { margin: 3px 0; }
+    </style>
+</head>
+<body class="modern-v3 sa-login-mode">
+    <div id="relogio-inatividade-sistema" title="Tempo para atualização automática">↻ 10:00</div>
+
+    <!-- Cabeçalho Superior -->
+    <header class="top-header">
+        <div class="header-content-top">
+            <div class="header-icons-row">
+                <button class="fotos-header-btn home-header-btn" onclick="modernV3Navigate('home', event)" title="Voltar à tela inicial" aria-label="Voltar à tela inicial">
+                    <span class="fotos-header-icon home-header-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M3 11.5 12 4l9 7.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></path>
+                            <path d="M5.5 10.5V20h5.2v-5.4h2.6V20h5.2v-9.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></path>
+                        </svg>
+                    </span>
+                    <span>Início</span>
+                </button>
+                <a class="sa-instagram-header-link" href="https://instagram.com/vinicius_bolonheze" target="_blank" rel="noopener noreferrer" title="Instagram de Vinicius Bolonheze" aria-label="Abrir Instagram de Vinicius Bolonheze">
+                    <i class="fa-brands fa-instagram" aria-hidden="true"></i><span>Instagram</span>
+                </a>
+                <button type="button" class="sa-site-settings-trigger" onclick="openSiteSettings()" title="Personalizar categorias, anos, logo e cores" aria-label="Personalizar categorias, anos, logo e cores da equipe">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6Zm9 4.7v-1.8l-2-.7a7.3 7.3 0 0 0-.6-1.4l.9-1.9-1.3-1.3-1.9.9a7.3 7.3 0 0 0-1.4-.6l-.7-2h-1.8l-.7 2a7.3 7.3 0 0 0-1.4.6l-1.9-.9L6.9 7l.9 1.9a7.3 7.3 0 0 0-.6 1.4l-2 .7v1.8l2 .7a7.3 7.3 0 0 0 .6 1.4l-.9 1.9 1.3 1.3 1.9-.9a7.3 7.3 0 0 0 1.4.6l.7 2h1.8l.7-2a7.3 7.3 0 0 0 1.4-.6l1.9.9 1.3-1.3-.9-1.9a7.3 7.3 0 0 0 .6-1.4l2-.7Z" fill="currentColor"/></svg>
+                    <span>Personalizar</span>
+                </button>
+                <button id="sa-database-export-header" type="button" class="sa-header-data-button sa-header-full-database" data-full-database="1" onclick="saDatabaseExport()" title="Exportar o banco completo para um arquivo JSON" aria-label="Exportar banco de dados completo em JSON">
+                    <span class="sa-header-export-icon"><i class="fa-solid fa-file-export" aria-hidden="true"></i></span>
+                    <span class="sa-header-export-copy"><strong>EXPORTAR BANCO DE DADOS</strong><small>Arquivo completo .JSON</small></span>
+                </button>
+                <span id="sa-local-server-status" class="sa-local-server-status" data-state="ok" title="Não esqueça de EXPORTAR antes de sair" aria-label="Não esqueça de EXPORTAR antes de sair"><i class="fa-solid fa-circle" aria-hidden="true"></i><span class="sa-header-status-text">Não esqueça de EXPORTAR antes de sair</span></span>
+            </div>
+            <div class="date-display"></div>
+        </div>
+        <button class="fullscreen-btn" onclick="toggleFullScreen()" title="Tela Cheia">
+            <i class="fa-solid fa-expand"></i> Tela Cheia
+        </button>
+    </header>
+
+    <div class="yellow-bar"></div>
+
+    <!-- Menu de Navegação / Botões -->
+    <nav class="nav-menu" id="main-nav" style="display: none;">
+        <button class="nav-btn" onclick="navigateTo('convocacao', event)">CONVOCAÇÃO</button>
+        <button class="nav-btn" onclick="navigateTo('prancheta', event)">PRANCHETA VIRTUAL</button>
+        <button class="nav-btn" onclick="navigateTo('excel-db', event)">Banco de Dados</button>
+        <button class="nav-btn" onclick="navigateTo('relatorios', event)">RELATÓRIOS</button>
+        <button class="nav-btn" onclick="navigateTo('atletas', event)">ATLETAS</button>
+        <button class="nav-btn" onclick="navigateTo('jogos', event)">JOGOS</button>
+        <button class="nav-btn" onclick="navigateTo('testes', event)">TESTES FÍSICOS</button>
+    </nav>
+
+    <div class="yellow-bar" id="yellow-bar-nav" style="display: none;"></div>
+
+    <main class="main-content">
+        <!-- Tela de Entrada -->
+        <section id="login-screen" class="screen active-screen">
+            <div class="login-card sa-login-card">
+                <img src="sa-logo.svg" alt="Marca VBolonheze Sports" class="login-logo sa-login-logo">
+                <h1 class="login-title">VBolonheze Sports</h1>
+                <p class="login-subtitle">Gestão esportiva local</p>
+                <form class="sa-login-form" onsubmit="return false;" autocomplete="off">
+                    <label for="sa-login-user">Login</label>
+                    <input id="sa-login-user" name="login" type="text" placeholder="Login" autocomplete="username">
+                    <label for="sa-login-password">Senha</label>
+                    <input id="sa-login-password" name="password" type="password" placeholder="Senha" autocomplete="current-password">
+                    <button class="btn-entrar sa-disabled-button" type="button" disabled title="Login ainda não está habilitado">Entrar — em breve</button>
+                </form>
+                <div class="sa-login-actions">
+                    <button id="sa-trial-button" class="sa-trial-button" type="button" onclick="startFreeTrial()"><i class="fa-solid fa-play"></i> Teste grátis</button>
+                    <button class="sa-buy-button" type="button" disabled title="Comprar ainda não está habilitado"><i class="fa-solid fa-cart-shopping"></i> Comprar</button>
+                </div>
+                <p class="sa-local-note">Seus dados esportivos ficam neste dispositivo e neste navegador. As telas salvam no cache local; ao final, exporte o banco completo em JSON para ter uma cópia portátil. O SA não envia esses dados esportivos à nuvem.</p>
+                <p class="sa-trial-note">Cadastro de atletas livre nesta versão local; limitado apenas pelo espaço disponível no dispositivo.</p>
+            </div>
+        </section>
+
+        <!-- Tela Inicial (Home) -->
+        <section id="home-screen" class="screen">
+            <div class="logo-container">
+                <div class="shield-box">
+                    <img src="sa-logo.svg" alt="Logo VBolonheze Sports" class="shield-logo-img">
+                </div>
+            </div>
+            <button class="floating-db-btn" onclick="navigateTo('excel-db', event)" title="Abrir Banco de Dados Completo">
+                <i class="fa-solid fa-database"></i> Banco de Dados
+            </button>
+        </section>
+
+        <!-- Tela de Banco de Dados -->
+        <section id="excel-db-screen" class="screen">
+            <div class="excel-container">
+                <div class="excel-header">
+                    <h2><i class="fa-solid fa-table"></i> Banco de Dados — VBolonheze Sports</h2>
+                    <span id="sa-trial-counter" class="sa-trial-counter">0 atletas cadastrados · livre</span>
+                    <div class="excel-actions">
+                        <label class="btn-import-excel" title="Importar arquivo do Excel (.xlsx)">
+                            <i class="fa-solid fa-file-excel"></i> Importar Excel (.xlsx)
+                            <input type="file" id="excel-file-input" accept=".xlsx, .xls" style="display: none;" onchange="importExcelFile(event)">
+                        </label>
+                        <button class="btn-excel-action" onclick="addRowToExcel()"><i class="fa-solid fa-plus"></i> Adicionar Linha</button>
+                        <button class="btn-excel-action" onclick="exportarBancoDadosXLSX()"><i class="fa-solid fa-file-excel"></i> Exportar planilha Excel (.xlsx)</button>
+                        <button class="btn-voltar" onclick="navigateTo('home', event)"><i class="fa-solid fa-arrow-left"></i> Voltar ao Início</button>
+                    </div>
+                </div>
+                <div class="excel-table-wrapper">
+                    <table id="excel-db-table">
+                        <thead><tr id="excel-header-row"></tr></thead>
+                        <tbody id="excel-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tela de Atletas Estilo VBA -->
+        <section id="atletas-screen" class="screen">
+            <div class="vba-atletas-container">
+                <div class="vba-atletas-title">Atletas — VBolonheze Sports</div>
+                <div class="vba-anos-filter">
+                    <div id="atletas-anos-filter-items" class="sa-dynamic-year-filters"></div>
+                </div>
+                <div class="vba-content-grid">
+                    <div class="vba-sidebar-btns">
+                        <button class="vba-green-btn" onclick="openAddAthleteModal()">Adicionar Atleta</button>
+                        <button class="vba-red-btn" onclick="deleteSelectedAthlete()">Excluir Atleta</button>
+                        <button class="vba-gray-btn" onclick="openEditAthleteModal()" style="background-color: #f39c12; color: #111;">Editar Atleta</button>
+                        <button class="vba-gray-btn" onclick="openFichaAtleta(selectedAthleteIndex)" style="background-color: #173b59; color: #40b8a8;">Ver Ficha Atleta</button>
+<button class="vba-gray-btn" onclick="openAnotacoesModal(selectedAthleteIndex)" style="background-color: #0984e3; color: #fff;">Anotações</button>
+</div>
+                    <div class="vba-positions-grid">
+                        <div class="pos-box"><div class="pos-header">Goleiros</div><div class="pos-list" id="list-goleiros"></div></div>
+                        <div class="pos-box"><div class="pos-header">Zagueiros</div><div class="pos-list" id="list-zagueiros"></div></div>
+                        <div class="pos-box"><div class="pos-header">Laterais</div><div class="pos-list" id="list-laterais"></div></div>
+                        <div class="pos-box"><div class="pos-header">Volantes</div><div class="pos-list" id="list-volantes"></div></div>
+                        <div class="pos-box"><div class="pos-header">Meias</div><div class="pos-list" id="list-meias"></div></div>
+                        <div class="pos-box"><div class="pos-header">Atacantes</div><div class="pos-list" id="list-atacantes"></div></div>
+                        <div class="pos-box"><div class="pos-header">Extremos</div><div class="pos-list" id="list-extremos"></div></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tela de Testes Físicos -->
+        <section id="testes-screen" class="screen">
+            <button id="btn-calculadora-estatico" onclick="abrirCalculadoraAltura()">CALCULADORA</button>
+            <div class="pf-container">
+                <div class="pf-tabs-bar">
+                    <button class="pf-tab active" onclick="switchPfTab('antropometricas')">Medidas Antropométricas</button>
+                    <button class="pf-tab" onclick="switchPfTab('resistencia')">Resistência</button>
+                    <button class="pf-tab" onclick="switchPfTab('potencia')">Potência Inferior</button>
+                    <button class="pf-tab" onclick="switchPfTab('velocidade')">Velocidade</button>
+                    <button class="pf-tab" onclick="switchPfTab('agilidade')">Agilidade</button>
+                    
+                    <div class="pf-subtab-group">
+                        <select id="pf-eval-select" class="pf-select-control" onchange="renderPfTable()"></select>
+                        <label class="ae-physical-filter">Categoria de treino<select id="ae-pf-cat" onchange="document.getElementById('pf-year-select').value='todos';renderPfTable()"><option value="">Anos / todos</option></select></label>
+                        <select id="pf-year-select" class="pf-select-control" onchange="document.getElementById('ae-pf-cat').value='';renderPfTable()"><option value="todos">Todos os Anos</option></select>
+                        <button class="pf-btn-add-eval" onclick="addNewEvaluation()" title="Adicionar Nova Avaliação">Adicionar Avaliação</button>
+                        <button class="pf-btn-del-eval" onclick="deleteCurrentEvaluation()" title="Apagar Avaliação Selecionada">Apagar Avaliação</button>
+                    </div>
+
+                    <button class="pf-btn-home" onclick="navigateTo('home', event)">Início</button>
+                    <button class="pf-btn-close" onclick="navigateTo('home', event)">×</button>
+                </div>
+                <div class="pf-title-bar">VBolonheze Sports — Avaliação Corporal / Testes Físicos</div>
+                <div class="pf-table-wrapper">
+                    <table id="pf-table">
+                        <thead><tr id="pf-header-row"></tr></thead>
+                        <tbody id="pf-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- NOVA TELA: Separação de Grupos -->
+        <!-- NOVA TELA: Separação de Grupos -->
+        <section id="grupos-screen" class="screen">
+            <div class="grupos-container">
+                <div class="pf-title-bar" style="display: flex; justify-content: space-between; align-items: center; padding: 8px 15px;">
+                    <span>Ficha de Separação de Grupos</span>
+                    <button class="pf-btn-home" onclick="navigateTo('testes', event)">Voltar para Testes</button>
+                </div>
+
+                <!-- Barra superior de filtros e médias -->
+                <div class="grupos-top-bar">
+                    <div class="grupos-filter-section">
+                        <strong>Filtrar Atletas (Anos):</strong>
+                        <div class="grupos-year-checkboxes" id="grupos-anos-filter">
+                            <!-- Inseridos via JS -->
+                        </div>
+                    </div>
+                    
+                    <div class="grupos-category-section">
+                        <div class="select-group">
+                            <label>Categoria:</label>
+                            <select id="grupo-categoria-select" onchange="calcularMediaCategoria()"><option value="">Selecione...</option></select>
+                        </div>
+                        <!-- Dropdown de 'Grupo' foi removido pois os 6 grupos estarão visíveis simultaneamente -->
+                    </div>
+
+			<div class="grupos-category-section">
+   		 <div class="select-group">
+     		    <label>Quantidade de grupos:</label>
+      		   <select id="select-qtd-grupos" onchange="onQtdGruposChange()">
+       		      <option value="1">1</option>
+        		     <option value="2">2</option>
+        		     <option value="3">3</option>
+        		     <option value="4">4</option> <!-- "selected" agora no 4 -->
+        		     <option value="5">5</option>
+         		    <option value="6"selected>6</option>
+     		    </select>
+  		   </div>
+		 </div>
+
+
+
+
+
+
+                </div>
+
+                <!-- Painel de Médias -->
+                <div class="grupos-media-panel" id="grupos-media-panel">
+                    <span class="media-title">Média da Categoria:</span>
+                    <span id="media-resistencia">Resistência: -</span>
+                    <span id="media-gordura">% Gordura: -</span>
+                    <span id="media-aceleracao">Aceleração: -</span>
+                    <span id="media-velocidade">Velocidade: -</span>
+                    <span id="media-agilidade">Agilidade: -</span>
+                    <span id="media-potencia">Potência: -</span>
+                </div>
+
+                <div class="grupos-split-view">
+                    
+                    <!-- TOP: Lista de Atletas em Cards (2 a 3 colunas fluídas) -->
+                    <!-- TOP: Lista de Atletas com Botões de Ordenação -->
+                    <div class="grupos-list-panel">
+                        <div class="grupos-panel-title" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 5px;">
+                            <span>Atletas (Arraste para as Fichas abaixo)</span>
+                            <!-- Botões de Ordenação -->
+                            <div id="ordenacao-botoes" style="display: flex; gap: 4px; font-size: 11px;">
+                                
+                                
+                            </div>
+                        </div>
+
+    <div class="grupos-atletas-list" id="grupos-lista-container">
+        <!-- Inserido via JS -->
+    </div>
+</div>
+
+                    <!-- BOTTOM: Fichas dos Grupos (Grid 2 por linha) -->
+                    <div class="grupos-fichas-grid">
+                        
+                        <!-- Ficha Grupo 1 -->
+                        <div class="grupos-ficha-panel drop-zone" data-grupo="Grupo 1">
+                            <div class="grupos-panel-title grupos-ficha-title"><span>Ficha do Grupo 1</span><span class="vb-brand-corner grupos-ficha-brand">VBolonheze Sports</span></div>
+                            <div class="table-container">
+                                <table class="grupos-data-table ficha-table">
+                                    <thead><tr><th>Ação</th><th>Nome</th><th>Ano</th><th>Resist.</th><th>%Gord</th><th>Acel.</th><th>Veloc.</th><th>Agil.</th><th>Pot.</th></tr></thead>
+                                    <tbody id="tbody-Grupo 1"></tbody>
+                                </table>
+                            </div>
+                            <div style="padding: 8px; text-align: right;"><button onclick="limparGrupo('Grupo 1')" style="background: #e53935; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold;">Limpar</button></div>
+                        </div>
+
+                        <!-- Ficha Grupo 2 -->
+                        <div class="grupos-ficha-panel drop-zone" data-grupo="Grupo 2">
+                            <div class="grupos-panel-title grupos-ficha-title"><span>Ficha do Grupo 2</span><span class="vb-brand-corner grupos-ficha-brand">VBolonheze Sports</span></div>
+                            <div class="table-container">
+                                <table class="grupos-data-table ficha-table">
+                                    <thead><tr><th>Ação</th><th>Nome</th><th>Ano</th><th>Resist.</th><th>%Gord</th><th>Acel.</th><th>Veloc.</th><th>Agil.</th><th>Pot.</th></tr></thead>
+                                    <tbody id="tbody-Grupo 2"></tbody>
+                                </table>
+                            </div>
+                            <div style="padding: 8px; text-align: right;"><button onclick="limparGrupo('Grupo 2')" style="background: #e53935; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold;">Limpar</button></div>
+                        </div>
+
+                        <!-- Ficha Grupo 3 -->
+                        <div class="grupos-ficha-panel drop-zone" data-grupo="Grupo 3">
+                            <div class="grupos-panel-title grupos-ficha-title"><span>Ficha do Grupo 3</span><span class="vb-brand-corner grupos-ficha-brand">VBolonheze Sports</span></div>
+                            <div class="table-container">
+                                <table class="grupos-data-table ficha-table">
+                                    <thead><tr><th>Ação</th><th>Nome</th><th>Ano</th><th>Resist.</th><th>%Gord</th><th>Acel.</th><th>Veloc.</th><th>Agil.</th><th>Pot.</th></tr></thead>
+                                    <tbody id="tbody-Grupo 3"></tbody>
+                                </table>
+                            </div>
+                            <div style="padding: 8px; text-align: right;"><button onclick="limparGrupo('Grupo 3')" style="background: #e53935; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold;">Limpar</button></div>
+                        </div>
+
+                        <!-- Ficha Grupo 4 -->
+                        <div class="grupos-ficha-panel drop-zone" data-grupo="Grupo 4">
+                            <div class="grupos-panel-title grupos-ficha-title"><span>Ficha do Grupo 4</span><span class="vb-brand-corner grupos-ficha-brand">VBolonheze Sports</span></div>
+                            <div class="table-container">
+                                <table class="grupos-data-table ficha-table">
+                                    <thead><tr><th>Ação</th><th>Nome</th><th>Ano</th><th>Resist.</th><th>%Gord</th><th>Acel.</th><th>Veloc.</th><th>Agil.</th><th>Pot.</th></tr></thead>
+                                    <tbody id="tbody-Grupo 4"></tbody>
+                                </table>
+                            </div>
+                            <div style="padding: 8px; text-align: right;"><button onclick="limparGrupo('Grupo 4')" style="background: #e53935; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold;">Limpar</button></div>
+                        </div>
+
+                        <!-- Ficha Grupo 5 -->
+                        <div class="grupos-ficha-panel drop-zone" data-grupo="Grupo 5">
+                            <div class="grupos-panel-title grupos-ficha-title"><span>Ficha do Grupo 5</span><span class="vb-brand-corner grupos-ficha-brand">VBolonheze Sports</span></div>
+                            <div class="table-container">
+                                <table class="grupos-data-table ficha-table">
+                                    <thead><tr><th>Ação</th><th>Nome</th><th>Ano</th><th>Resist.</th><th>%Gord</th><th>Acel.</th><th>Veloc.</th><th>Agil.</th><th>Pot.</th></tr></thead>
+                                    <tbody id="tbody-Grupo 5"></tbody>
+                                </table>
+                            </div>
+                            <div style="padding: 8px; text-align: right;"><button onclick="limparGrupo('Grupo 5')" style="background: #e53935; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold;">Limpar</button></div>
+                        </div>
+
+                        <!-- Ficha Grupo 6 -->
+                        <div class="grupos-ficha-panel drop-zone" data-grupo="Grupo 6">
+                            <div class="grupos-panel-title grupos-ficha-title"><span>Ficha do Grupo 6</span><span class="vb-brand-corner grupos-ficha-brand">VBolonheze Sports</span></div>
+                            <div class="table-container">
+                                <table class="grupos-data-table ficha-table">
+                                    <thead><tr><th>Ação</th><th>Nome</th><th>Ano</th><th>Resist.</th><th>%Gord</th><th>Acel.</th><th>Veloc.</th><th>Agil.</th><th>Pot.</th></tr></thead>
+                                    <tbody id="tbody-Grupo 6"></tbody>
+                                </table>
+                            </div>
+                            <div style="padding: 8px; text-align: right;"><button onclick="limparGrupo('Grupo 6')" style="background: #e53935; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold;">Limpar</button></div>
+                        </div>
+
+                    </div>
+                </div>
+
+		<div style="text-align: center; margin: 25px 0; width: 100%;">
+    <button onclick="gerarFichasTreino()" style="background: #27ae60; color: #fff; padding: 14px 28px; font-size: 16px; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.15); display: inline-flex; align-items: center; gap: 8px;">
+        <span class="grupos-gerar-icone" aria-hidden="true">📝</span> GERAR FICHAS
+    			</button>
+		</div>
+            </div>
+        </section>
+
+
+<section id="fichas-treino-screen" class="screen" style="display: none;">
+    <!-- Barra Superior de Ações (Oculta na Impressão) -->
+    <div class="no-print" style="max-width: 1100px; margin: 0 auto 20px auto; display: flex; justify-content: space-between; align-items: center; padding: 10px 0;">
+        <button onclick="voltarParaGrupos()" style="background: #6c757d; color: #fff; padding: 10px 20px; font-size: 14px; font-weight: bold; border: none; border-radius: 5px; cursor: pointer;">
+            <i class="fa-solid fa-arrow-left"></i> Voltar para Grupos
+        </button>
+        <button onclick="imprimirFichasTreino()" style="background: #0984e3; color: #fff; padding: 12px 24px; font-size: 15px; font-weight: bold; border: none; border-radius: 5px; cursor: pointer;">
+            <i class="fa-solid fa-print"></i> IMPRIMIR FICHAS (A4 PAISAGEM)
+        </button>
+<button id="btn-salvar-ficha" style="background-color: #28a745; color: white; padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; margin-right: 10px;">
+    💾 Salvar Ficha
+</button>
+    </div>
+
+    <!-- Container onde as fichas do layout serão injetadas -->
+    <div id="fichas-render-container"></div>
+</section>
+
+
+        <section id="prancheta-screen" class="screen">
+            <div id="prancheta-content"></div>
+        </section>
+
+        <section id="generic-screen" class="screen">
+            <div class="generic-container" id="generic-content">
+                <h2 id="generic-title">Módulo em Desenvolvimento</h2>
+                <button class="btn-voltar" onclick="navigateTo('home', event)"><i class="fa-solid fa-arrow-left"></i> Voltar ao Início</button>
+            </div>
+        </section>
+    </main>
+
+    <!-- Modal Adicionar Atleta -->
+    <div id="add-athlete-modal" class="vba-modal-overlay" style="display: none;">
+        <!-- ... (Mantido exatamente como estava) ... -->
+        <div class="vba-modal-card">
+            <div class="vba-modal-title">
+                <span>Adicionar Atletas — VBolonheze Sports</span>
+                <span class="vba-modal-close" onclick="closeAddAthleteModal()">&times;</span>
+            </div>
+            <form id="athlete-form" onsubmit="saveNewAthlete(event)" class="vba-form-grid">
+                <div class="form-row"><label>Nome Completo:</label><input type="text" id="add-nome" required></div>
+                <div class="form-row"><label>Apelido:</label><input type="text" id="add-apelido"></div>
+                <div class="form-row">
+                    <label>Ano:</label>
+                    <select id="add-ano" aria-label="Ano de nascimento"></select>
+                </div>
+                <div class="form-row"><label>Data de Nascimento:</label><input type="text" id="add-nascimento" placeholder="DD/MM/AAAA"></div>
+                <div class="form-row">
+                    <label>Posição:</label>
+                    <select id="add-posicao">
+                        <option value="Goleiro">Goleiro</option>
+                        <option value="Zagueiro">Zagueiro</option>
+                        <option value="Zagueiro Dir.">Zagueiro Dir.</option>
+                        <option value="Zagueiro Esq.">Zagueiro Esq.</option>
+                        <option value="Lateral Dir.">Lateral Dir.</option>
+                        <option value="Lateral Esq.">Lateral Esq.</option>
+                        <option value="Volante">Volante</option>
+                        <option value="1º Volante">1º Volante</option>
+                        <option value="2º Volante">2º Volante</option>
+                        <option value="Meia" selected>Meia</option>
+                        <option value="Atacante">Atacante</option>
+                        <option value="Ponta Dir.">Ponta Dir.</option>
+                        <option value="Ponta Esq.">Ponta Esq.</option>
+                        <option value="Extremo">Extremo</option>
+                    </select>
+                </div>
+                <div class="form-row"><label>Cidade:</label><input type="text" id="add-cidade"></div>
+                <div class="form-row"><label>Contato:</label><input type="text" id="add-contato"></div>
+                <div class="form-row"><label>RG:</label><input type="text" id="add-rg"></div>
+                <div class="form-row">
+                    <label>Foto do Atleta:</label>
+                    <div class="upload-group">
+                        <label class="btn-select-file" id="file-label-text" for="add-foto">Selecionar Foto</label>
+                        <input type="file" id="add-foto" accept="image/*" onchange="previewAthletePhoto(this)">
+                    </div>
+                    <small id="athlete-photo-size-note" class="athlete-photo-size-note">Fotos novas serão otimizadas para até 100 KB por imagem no JSON; fotos antigas não serão alteradas.</small>
+                </div>
+                <div class="vba-modal-buttons">
+                    <button type="submit" class="vba-btn-salvar">Salvar</button>
+                    <button type="button" class="vba-btn-cancelar" onclick="closeAddAthleteModal()">Cancelar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="fichaModal" class="modal-overlay">
+        <!-- Mantido como original -->
+        <div class="modal-container">
+            <div class="modal-header">
+                <span class="close-btn" onclick="closeModal()">&times;</span>
+                <h2>Ficha VBolonheze Sports</h2>
+            </div>
+            <div class="modal-body" id="fichaModalBody"></div>
+        </div>
+    </div>
+
+    <!-- Rodapé -->
+    <footer class="bottom-footer">
+        <div class="footer-logo-box">
+            <span class="vb-badge">VB</span>
+            <span class="sa-brand-label">VBolonheze Sports</span>
+        </div>
+        <p class="footer-sub">Sistema de Organização Metodológica</p>
+        <p class="footer-dev">Desenvolvido em Excel VBA / Web</p>
+    </footer>
+
+	<!-- Modal Selecionar Grupo ao Clicar no Atleta -->
+    <div id="select-grupo-modal" class="vba-modal-overlay" style="display: none;">
+        <div class="vba-modal-card" style="width: 320px;">
+            <div class="vba-modal-title">
+                <span>Selecionar Grupo</span>
+                <span class="vba-modal-close" onclick="closeSelectGrupoModal()">&times;</span>
+            </div>
+            <div class="vba-form-grid" style="padding: 10px 0;">
+                <p id="modal-atleta-nome" style="font-weight: bold; font-size: 14px; margin-bottom: 12px; text-align: center;"></p>
+                <label style="margin-bottom: 8px; display: block; font-size: 13px;">Escolha o Grupo de Destino:</label>
+                
+                <!-- Container onde os botões dos grupos vão aparecer -->
+                <div id="modal-grupos-container" style="display: flex; flex-direction: column; gap: 8px;">
+                    <!-- Preenchido via JavaScript -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+<!-- Modal de Anotações do Atleta -->
+    <!-- Modal de Anotações do Atleta -->
+<div id="modal-anotacoes" class="vba-modal-overlay" style="display: none;">
+    <div class="vba-modal-card" style="width: 480px; border: 2px solid #173b59; background: #fff; border-radius: 6px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.3);">
+        <!-- Cabeçalho do Modal -->
+        <div style="background: #173b59; color: #FFD700; padding: 12px 15px; font-weight: bold; font-size: 16px; display: flex; justify-content: space-between; align-items: center; text-transform: uppercase;">
+            <span>INFORMAÇÕES DO ATLETA</span>
+            <span style="cursor: pointer; font-size: 18px;" onclick="closeAnotacoesModal()">&times;</span>
+        </div>
+        
+        <!-- Conteúdo do Modal -->
+        <div style="padding: 15px; max-height: 80vh; overflow-y: auto;">
+            <!-- Informações Básicas -->
+            <div style="display: flex; gap: 15px; align-items: center; border-bottom: 2px solid #FFD700; padding-bottom: 12px; margin-bottom: 15px;">
+                <img id="anotacao-atleta-foto" src="" alt="Foto" style="width: 75px; height: 90px; object-fit: cover; border-radius: 4px; border: 1px solid #ccc; background: #eee;">
+                <div>
+                    <h3 id="anotacao-atleta-nome" style="margin: 0 0 5px 0; color: #173b59; font-size: 18px;">Nome do Atleta</h3>
+                    <p style="margin: 2px 0; font-size: 13px; color: #333;"><strong>Posição:</strong> <span id="anotacao-atleta-posicao">-</span></p>
+                    <p style="margin: 2px 0; font-size: 13px; color: #333;"><strong>Nascimento:</strong> <span id="anotacao-atleta-nasc">-</span></p>
+                    <p style="margin: 2px 0; font-size: 13px; color: #333;"><strong>Cidade:</strong> <span id="anotacao-atleta-cidade">-</span></p>
+                </div>
+            </div>
+
+            <!-- Seção de Anotações -->
+            <div style="margin-bottom: 15px;">
+                <label style="display: block; font-weight: bold; color: #173b59; font-size: 14px; margin-bottom: 6px;">Anotações:</label>
+                <textarea id="textarea-anotacoes-texto" style="width: 100%; height: 100px; padding: 10px; border: 1px solid #ccc; border-radius: 4px; resize: none; font-size: 13px; box-sizing: border-box;" placeholder="Digite suas anotações..."></textarea>
+            </div>
+
+            <!-- Seção de Anexar Documentos -->
+            <div style="margin-bottom: 15px; background: #f9f9f9; padding: 10px; border: 1px dashed #b30000; border-radius: 4px;">
+                <label style="display: block; font-weight: bold; color: #173b59; font-size: 14px; margin-bottom: 6px;">Anexar Documentos (Vários):</label>
+                <input type="file" id="input-novos-documentos" multiple style="font-size: 12px; width: 100%; margin-bottom: 8px;" onchange="processarUploadDocumentos(this)">
+                <div id="lista-documentos-anexados" style="font-size: 12px; display: flex; flex-direction: column; gap: 4px;">
+                    <!-- Links dos documentos gerados aparecerão aqui -->
+                </div>
+            </div>
+
+            <!-- Rodapé do Modal -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 15px;">
+                <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+                    <label style="cursor: pointer; display: inline-flex; align-items: center; font-weight: bold; gap: 5px; font-size: 13px;">
+                        <input type="checkbox" id="checkbox-lesao" style="width: 16px; height: 16px; cursor: pointer;"> Lesão
+                    </label>
+                    <label style="cursor: pointer; display: inline-flex; align-items: center; font-weight: bold; gap: 5px; font-size: 13px;">
+                        <input type="checkbox" id="checkbox-cartao-vermelho" style="width: 16px; height: 16px; cursor: pointer;"> Cartão vermelho
+                    </label>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <button type="button" class="vba-btn-cancelar" onclick="closeAnotacoesModal()" style="padding: 6px 15px; cursor: pointer;">Cancelar</button>
+                    <button type="button" class="vba-btn-salvar" onclick="salvarAnotacoesAtleta()" style="background: #173b59; color: #fff; border: none; padding: 6px 20px; border-radius: 4px; font-weight: bold; cursor: pointer;">Salvar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+    <!-- Entrada do banco local: as duas ações são aplicadas sem tela de confirmação. -->
+    <section id="sa-database-entry-modal" class="sa-backup-overlay sa-database-entry-overlay" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="sa-database-entry-title" onclick="if(event.target===this)saDatabaseCloseEntry()">
+        <div class="sa-backup-card sa-database-entry-card">
+            <button id="sa-database-entry-close" type="button" class="sa-backup-close" onclick="saDatabaseCloseEntry()" aria-label="Fechar">&times;</button>
+            <div class="sa-backup-eyebrow"><i class="fa-solid fa-database" aria-hidden="true"></i> <span id="sa-database-entry-eyebrow">Teste grátis</span></div>
+            <h2 id="sa-database-entry-title">Importar ou abrir banco novo?</h2>
+            <p class="sa-backup-intro">Escolha como deseja abrir o SA: importe um banco JSON existente ou abra um banco de dados novo. A opção selecionada será aplicada imediatamente, sem tela de confirmação.</p>
+            <div class="sa-database-entry-options">
+                <article class="sa-database-entry-option sa-database-option-import">
+                    <span class="sa-database-option-icon"><i class="fa-solid fa-file-import" aria-hidden="true"></i></span>
+                    <h3>IMPORTAR</h3>
+                    <p>Selecione um arquivo JSON completo para substituir os dados e arquivos/fotos salvos neste navegador.</p>
+                    <button type="button" class="sa-database-option-button" onclick="saDatabaseChooseImport()">Importar banco JSON</button>
+                </article>
+                <article class="sa-database-entry-option sa-database-option-empty">
+                    <span class="sa-database-option-icon"><i class="fa-solid fa-circle-plus" aria-hidden="true"></i></span>
+                    <h3>Abrir banco de dados novo</h3>
+                    <p>Limpa o banco e as preferências salvos pelo SA neste navegador e abre uma base nova.</p>
+                    <button type="button" class="sa-database-option-button" onclick="saDatabaseStartEmpty()">Abrir banco novo</button>
+                </article>
+            </div>
+            <input id="sa-database-json-input" type="file" accept=".json,application/json" hidden onchange="saDatabaseHandleImportFile(event)">
+            <div id="sa-database-entry-status" class="sa-backup-progress" role="status" aria-live="polite"></div>
+            <p class="sa-database-privacy-note"><i class="fa-solid fa-lock" aria-hidden="true"></i> O JSON é criado e lido neste navegador; o SA não envia os dados esportivos a um servidor. Se compartilhar o arquivo por mensageiro ou nuvem, esse serviço receberá uma cópia.</p>
+            <div class="sa-backup-actions sa-database-entry-footer">
+                <button type="button" class="sa-backup-secondary" onclick="saDatabaseCloseEntry()">Fechar sem alterar</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Alerta ao entrar: exporte o banco completo antes de sair do sistema. -->
+    <section id="sa-export-reminder-modal" class="sa-backup-overlay sa-export-reminder-overlay" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="sa-export-reminder-title" onclick="if(event.target===this)saDatabaseCloseExportReminder()">
+        <div class="sa-export-reminder-card">
+            <button id="sa-export-reminder-close" type="button" class="sa-export-reminder-close" onclick="saDatabaseCloseExportReminder()" aria-label="Fechar lembrete">&times;</button>
+            <div class="sa-export-reminder-main">
+                <span class="sa-export-reminder-shield" aria-hidden="true"><i class="fa-solid fa-shield-halved"></i></span>
+                <div class="sa-export-reminder-copy">
+                    <span class="sa-export-reminder-kicker">LEMBRETE IMPORTANTE</span>
+                    <h2 id="sa-export-reminder-title">Exporte antes de sair</h2>
+                    <p>Antes de fechar o SA, exporte o banco completo em JSON para guardar uma cópia atualizada dos seus dados e fotos. O botão fica no cabeçalho, ao lado de Personalizar.</p>
+                </div>
+            </div>
+            <div class="sa-export-reminder-callout"><i class="fa-solid fa-circle-info" aria-hidden="true"></i><span>O banco de trabalho fica neste navegador. Se compartilhar o JSON por mensageiro ou serviço de nuvem, esse serviço receberá uma cópia.</span></div>
+            <div class="sa-export-reminder-actions">
+                <button id="sa-export-reminder-continue" type="button" class="sa-export-reminder-continue" onclick="saDatabaseCloseExportReminder()">Entendi, continuar</button>
+            </div>
+            <div id="sa-export-reminder-status" class="sa-export-reminder-status" role="status" aria-live="polite"></div>
+        </div>
+    </section>
+
+    <!-- Backups ZIP modulares legados da v13: mantidos para compatibilidade. -->
+    <section id="sa-export-modal" class="sa-backup-overlay" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="sa-export-title" onclick="if(event.target===this)saBackupCloseModal('sa-export-modal')">
+        <div class="sa-backup-card">
+            <button type="button" class="sa-backup-close" onclick="saBackupCloseModal('sa-export-modal')" aria-label="Fechar">&times;</button>
+            <div class="sa-backup-eyebrow"><i class="fa-solid fa-box-archive" aria-hidden="true"></i> Cópia local</div>
+            <h2 id="sa-export-title">Exportar dados</h2>
+            <p class="sa-backup-intro">Escolha os módulos que deseja incluir. Todos começam marcados. O arquivo ZIP também será guardado em <strong>Banco de Dados/Exportacoes</strong>.</p>
+            <div class="sa-backup-selection-tools">
+                <button type="button" onclick="saBackupSetAll('export',true)">Marcar tudo</button>
+                <button type="button" onclick="saBackupSetAll('export',false)">Desmarcar tudo</button>
+            </div>
+            <div id="sa-export-module-list" class="sa-backup-module-list"></div>
+            <div id="sa-backup-progress" class="sa-backup-progress" role="status" aria-live="polite"></div>
+            <div class="sa-backup-actions">
+                <button type="button" class="sa-backup-secondary" onclick="saBackupCloseModal('sa-export-modal')">Cancelar</button>
+                <button type="button" id="sa-export-confirm" class="sa-backup-primary" onclick="saBackupExport()"><i class="fa-solid fa-download" aria-hidden="true"></i> Exportar selecionados</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="sa-import-modal" class="sa-backup-overlay" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="sa-import-title" onclick="if(event.target===this)saBackupCloseModal('sa-import-modal')">
+        <div class="sa-backup-card">
+            <button type="button" class="sa-backup-close" onclick="saBackupCloseModal('sa-import-modal')" aria-label="Fechar">&times;</button>
+            <div class="sa-backup-eyebrow"><i class="fa-solid fa-file-import" aria-hidden="true"></i> Restaurar dados locais</div>
+            <h2 id="sa-import-title">Importar backup</h2>
+            <p class="sa-backup-intro">Selecione um backup ZIP criado pelo SA, marque os módulos e escolha o que fazer com os dados atuais.</p>
+            <label class="sa-backup-file-label" for="sa-import-file"><i class="fa-solid fa-folder-open" aria-hidden="true"></i> Arquivo de backup (.zip)</label>
+            <input id="sa-import-file" class="sa-backup-file-input" type="file" accept=".zip,application/zip">
+            <div class="sa-backup-selection-tools">
+                <button type="button" onclick="saBackupSetAll('import',true)">Marcar tudo</button>
+                <button type="button" onclick="saBackupSetAll('import',false)">Desmarcar tudo</button>
+            </div>
+            <div id="sa-import-module-list" class="sa-backup-module-list"></div>
+            <fieldset class="sa-import-mode">
+                <legend>Como importar desta vez?</legend>
+                <label><input type="radio" name="sa-import-mode" value="merge" checked><span><strong>Mesclar / atualizar</strong><small>Adiciona os dados novos e atualiza registros correspondentes; mantém os demais.</small></span></label>
+                <label><input type="radio" name="sa-import-mode" value="replace"><span><strong>Substituir os módulos selecionados</strong><small>Remove os dados atuais desses módulos e coloca os do backup; os outros módulos ficam intactos.</small></span></label>
+            </fieldset>
+            <p class="sa-backup-caution"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> A substituição pede uma confirmação adicional antes de alterar os dados.</p>
+            <div id="sa-import-progress" class="sa-backup-progress" role="status" aria-live="polite"></div>
+            <div class="sa-backup-actions">
+                <button type="button" class="sa-backup-secondary" onclick="saBackupCloseModal('sa-import-modal')">Cancelar</button>
+                <button type="button" id="sa-import-confirm" class="sa-backup-primary" onclick="saBackupImport()"><i class="fa-solid fa-upload" aria-hidden="true"></i> Importar selecionados</button>
+            </div>
+        </div>
+    </section>
+
+    <script src="backup.js?v=sa-local-v14-athlete-photo-json-100kb-20261102"></script>
+    <script src="database-json.js?v=sa-local-v14-athlete-photo-json-100kb-20261102"></script>
+    <script src="script.js?v=sa-local-v14-athlete-photo-json-100kb-20261102"></script>
+</body>
+</html>

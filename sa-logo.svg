@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">VB Sports — VBolonheze Sports</title>
+  <desc id="desc">Escudo esportivo com as iniciais VB e a palavra Sports.</desc>
+  <defs>
+    <linearGradient id="shield" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#173b59"/>
+      <stop offset="1" stop-color="#0b2437"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#40b8a8"/>
+      <stop offset="1" stop-color="#a3efdc"/>
+    </linearGradient>
+  </defs>
+  <path d="M256 18 457 78v165c0 111-72 189-201 251C127 432 55 354 55 243V78L256 18Z" fill="url(#shield)"/>
+  <path d="M256 34 441 89v154c0 101-64 172-185 231-121-59-185-130-185-231V89l185-55Z" fill="none" stroke="url(#accent)" stroke-width="8"/>
+  <path d="m112 119 69-21-31 56-68 21 30-56Zm218-21 69 21 30 56-68-21-31-56Z" fill="url(#accent)" opacity=".9"/>
+  <text x="256" y="255" text-anchor="middle" fill="#fff" font-family="Arial, Helvetica, sans-serif" font-size="151" font-weight="900" letter-spacing="-8">VB</text>
+  <path d="M133 287h246" stroke="url(#accent)" stroke-width="7" stroke-linecap="round"/>
+  <text x="256" y="351" text-anchor="middle" fill="#fff" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="900" letter-spacing="8">SPORTS</text>
+  <text x="256" y="387" text-anchor="middle" fill="#a9dfd6" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" letter-spacing="5">VBOLONHEZE</text>
+</svg>
