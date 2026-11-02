@@ -6071,13 +6071,16 @@ body.modern-v3.app-v3-mode .sa-local-server-status[data-state="working"] > i { c
 body.sa-database-modal-open, body.sa-export-reminder-open { overflow: hidden; }
 .sa-database-entry-overlay { z-index: 12100; }
 .sa-database-entry-card { width: min(920px, 100%); max-height: min(94vh, 900px); overflow-y: auto; }
-.sa-database-entry-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.sa-database-entry-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .sa-database-entry-option {
     display: flex; flex-direction: column; align-items: flex-start; min-height: 225px; padding: 19px;
     border: 1px solid #dbe3ef; border-radius: 18px; background: linear-gradient(145deg,#fff,#f8fafc);
     box-shadow: 0 8px 20px rgba(15,23,42,.05);
 }
 .sa-database-option-import { border-color: #b7ddd5; background: linear-gradient(145deg,#fff,#f0fdfa); }
+.sa-database-option-cache { border-color: #bfdbfe; background: linear-gradient(145deg,#fff,#eff6ff); }
+.sa-database-option-cache .sa-database-option-icon { background: #dbeafe; color: #1d4ed8; }
+.sa-database-option-cache .sa-database-option-button { border-color: #bfdbfe; color: #1e40af; }
 .sa-database-option-empty { border-color: #fed7aa; background: linear-gradient(145deg,#fff,#fff7ed); }
 .sa-database-option-icon { display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 12px; border-radius: 14px; background: #e6fffa; color: #0b6e73; font-size: 18px; }
 .sa-database-option-empty .sa-database-option-icon { background: #ffedd5; color: #c2410c; }
@@ -6160,6 +6163,9 @@ body.modern-v3.app-v3-mode .sa-header-export-copy small { color: rgba(255,255,25
     body.modern-v3.app-v3-mode .sa-header-export-copy strong { font-size: 8px; }
     body.modern-v3.app-v3-mode .sa-header-export-copy small { font-size: 8px; }
 }
+@media (max-width: 920px) {
+    .sa-database-entry-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 760px) {
     .sa-database-entry-card { padding: 22px 14px 15px; max-height: 96dvh; }
     .sa-database-entry-options { grid-template-columns: 1fr; gap: 9px; }
@@ -6223,5 +6229,102 @@ body.modern-v3 .sa-header-status-text {
         display: inline !important;
         white-space: normal !important;
         line-height: 1.2 !important;
- 	   }
+    }
+}
+
+/* Cabeçalho compacto para celular: ícones claros e EXPORTAR em texto; desktop permanece igual. */
+.sa-instagram-mobile-mark,
+.sa-header-export-mobile-label { display: none; }
+@media (max-width: 760px) {
+    body.modern-v3.app-v3-mode .header-icons-row {
+        align-items: center !important;
+        justify-content: flex-start !important;
+        flex-wrap: wrap !important;
+        gap: 7px !important;
+    }
+    body.modern-v3.app-v3-mode .header-icons-row .home-header-btn,
+    body.modern-v3.app-v3-mode .header-icons-row .sa-instagram-header-link,
+    body.modern-v3.app-v3-mode .header-icons-row .sa-site-settings-trigger {
+        display: inline-flex !important;
+        flex: 0 0 40px !important;
+        width: 40px !important;
+        min-width: 40px !important;
+        height: 40px !important;
+        min-height: 40px !important;
+        padding: 0 !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 0 !important;
+        border: 1px solid rgba(23,59,89,.14) !important;
+        border-radius: 12px !important;
+        background: #fff !important;
+        color: #173b59 !important;
+        box-shadow: 0 5px 13px rgba(15,23,42,.08) !important;
+        text-decoration: none !important;
+    }
+    body.modern-v3.app-v3-mode .header-icons-row .home-header-btn > span:not(.fotos-header-icon),
+    body.modern-v3.app-v3-mode .header-icons-row .sa-instagram-header-link > span,
+    body.modern-v3.app-v3-mode .header-icons-row .sa-site-settings-trigger > span {
+        display: none !important;
+    }
+    body.modern-v3.app-v3-mode .header-icons-row .home-header-btn .home-header-icon {
+        display: inline-flex !important;
+        width: 22px !important;
+        height: 22px !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    body.modern-v3.app-v3-mode .header-icons-row .home-header-btn .home-header-icon svg {
+        display: block !important;
+        width: 21px !important;
+        height: 21px !important;
+        color: #173b59 !important;
+        stroke: #173b59 !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+    }
+    body.modern-v3.app-v3-mode .header-icons-row .sa-instagram-header-link > i { display: none !important; }
+    body.modern-v3.app-v3-mode .header-icons-row .sa-instagram-header-link .sa-instagram-mobile-mark {
+        display: block !important;
+        width: 23px !important;
+        height: 23px !important;
+        flex: 0 0 23px !important;
+    }
+    body.modern-v3.app-v3-mode .header-icons-row .sa-site-settings-trigger > svg {
+        display: block !important;
+        width: 21px !important;
+        height: 21px !important;
+        color: #173b59 !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+    }
+    body.modern-v3.app-v3-mode .header-icons-row .sa-header-full-database {
+        display: inline-flex !important;
+        flex: 0 0 auto !important;
+        width: auto !important;
+        min-width: 91px !important;
+        max-width: none !important;
+        height: 40px !important;
+        min-height: 40px !important;
+        padding: 0 13px !important;
+        align-items: center !important;
+        justify-content: center !important;
+        border: 1px solid rgba(64,184,168,.55) !important;
+        border-radius: 12px !important;
+        background: linear-gradient(135deg,#173b59,#0b6e73) !important;
+        box-shadow: 0 7px 16px rgba(23,59,89,.16) !important;
+    }
+    body.modern-v3.app-v3-mode .header-icons-row .sa-header-full-database .sa-header-export-icon,
+    body.modern-v3.app-v3-mode .header-icons-row .sa-header-full-database .sa-header-export-copy {
+        display: none !important;
+    }
+    body.modern-v3.app-v3-mode .header-icons-row .sa-header-full-database .sa-header-export-mobile-label {
+        display: inline !important;
+        color: #fff !important;
+        font-size: 11px !important;
+        font-weight: 950 !important;
+        letter-spacing: .045em !important;
+        line-height: 1 !important;
+        white-space: nowrap !important;
+    }
 }

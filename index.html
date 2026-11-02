@@ -10,7 +10,7 @@
     <link rel="apple-touch-icon" href="sa-logo.svg">
     <meta name="theme-color" content="#173b59">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; base-uri 'self'; object-src 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' data: blob:; media-src 'self' data: blob:; frame-src 'self' about: data: blob:; worker-src 'self' blob:">
-    <link rel="stylesheet" href="style.css?v=sa-local-v14-athlete-photo-json-100kb-20261102">
+    <link rel="stylesheet" href="style.css?v=sa-local-v14-browser-cache-choice-20261102">
     <!-- Bibliotecas empacotadas localmente para uso com ou sem internet -->
     <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
     <script src="vendor/xlsx.full.min.js"></script>
@@ -53,7 +53,15 @@
                     <span>Início</span>
                 </button>
                 <a class="sa-instagram-header-link" href="https://instagram.com/vinicius_bolonheze" target="_blank" rel="noopener noreferrer" title="Instagram de Vinicius Bolonheze" aria-label="Abrir Instagram de Vinicius Bolonheze">
-                    <i class="fa-brands fa-instagram" aria-hidden="true"></i><span>Instagram</span>
+                    <i class="fa-brands fa-instagram" aria-hidden="true"></i>
+                    <svg class="sa-instagram-mobile-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <defs><linearGradient id="sa-instagram-gradient" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#feda75"></stop><stop offset=".35" stop-color="#fa7e1e"></stop><stop offset=".68" stop-color="#d62976"></stop><stop offset="1" stop-color="#4f5bd5"></stop></linearGradient></defs>
+                        <rect x="2" y="2" width="20" height="20" rx="6" fill="url(#sa-instagram-gradient)"></rect>
+                        <rect x="6.4" y="6.4" width="11.2" height="11.2" rx="3.4" fill="none" stroke="#fff" stroke-width="1.8"></rect>
+                        <circle cx="12" cy="12" r="2.7" fill="none" stroke="#fff" stroke-width="1.8"></circle>
+                        <circle cx="17.2" cy="6.9" r="1.05" fill="#fff"></circle>
+                    </svg>
+                    <span>Instagram</span>
                 </a>
                 <button type="button" class="sa-site-settings-trigger" onclick="openSiteSettings()" title="Personalizar categorias, anos, logo e cores" aria-label="Personalizar categorias, anos, logo e cores da equipe">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6Zm9 4.7v-1.8l-2-.7a7.3 7.3 0 0 0-.6-1.4l.9-1.9-1.3-1.3-1.9.9a7.3 7.3 0 0 0-1.4-.6l-.7-2h-1.8l-.7 2a7.3 7.3 0 0 0-1.4.6l-1.9-.9L6.9 7l.9 1.9a7.3 7.3 0 0 0-.6 1.4l-2 .7v1.8l2 .7a7.3 7.3 0 0 0 .6 1.4l-.9 1.9 1.3 1.3 1.9-.9a7.3 7.3 0 0 0 1.4.6l.7 2h1.8l.7-2a7.3 7.3 0 0 0 1.4-.6l1.9.9 1.3-1.3-.9-1.9a7.3 7.3 0 0 0 .6-1.4l2-.7Z" fill="currentColor"/></svg>
@@ -62,6 +70,7 @@
                 <button id="sa-database-export-header" type="button" class="sa-header-data-button sa-header-full-database" data-full-database="1" onclick="saDatabaseExport()" title="Exportar o banco completo para um arquivo JSON" aria-label="Exportar banco de dados completo em JSON">
                     <span class="sa-header-export-icon"><i class="fa-solid fa-file-export" aria-hidden="true"></i></span>
                     <span class="sa-header-export-copy"><strong>EXPORTAR BANCO DE DADOS</strong><small>Arquivo completo .JSON</small></span>
+                    <span class="sa-header-export-mobile-label" aria-hidden="true">EXPORTAR</span>
                 </button>
                 <span id="sa-local-server-status" class="sa-local-server-status" data-state="ok" title="Não esqueça de EXPORTAR antes de sair" aria-label="Não esqueça de EXPORTAR antes de sair"><i class="fa-solid fa-circle" aria-hidden="true"></i><span class="sa-header-status-text">Não esqueça de EXPORTAR antes de sair</span></span>
             </div>
@@ -552,23 +561,29 @@
         </div>
     </div>
 </div>
-    <!-- Entrada do banco local: as duas ações são aplicadas sem tela de confirmação. -->
+    <!-- Entrada do banco local: as três opções permitem importar, reabrir dados salvos ou iniciar banco novo. -->
     <section id="sa-database-entry-modal" class="sa-backup-overlay sa-database-entry-overlay" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="sa-database-entry-title" onclick="if(event.target===this)saDatabaseCloseEntry()">
         <div class="sa-backup-card sa-database-entry-card">
             <button id="sa-database-entry-close" type="button" class="sa-backup-close" onclick="saDatabaseCloseEntry()" aria-label="Fechar">&times;</button>
             <div class="sa-backup-eyebrow"><i class="fa-solid fa-database" aria-hidden="true"></i> <span id="sa-database-entry-eyebrow">Teste grátis</span></div>
-            <h2 id="sa-database-entry-title">Importar ou abrir banco novo?</h2>
-            <p class="sa-backup-intro">Escolha como deseja abrir o SA: importe um banco JSON existente ou abra um banco de dados novo. A opção selecionada será aplicada imediatamente, sem tela de confirmação.</p>
+            <h2 id="sa-database-entry-title">Como deseja abrir o SA?</h2>
+            <p class="sa-backup-intro">Escolha entre importar um JSON, abrir os dados já salvos neste navegador ou começar com um banco novo. Importar substitui o banco atual; abrir os dados locais preserva o que já está guardado.</p>
             <div class="sa-database-entry-options">
                 <article class="sa-database-entry-option sa-database-option-import">
                     <span class="sa-database-option-icon"><i class="fa-solid fa-file-import" aria-hidden="true"></i></span>
-                    <h3>IMPORTAR</h3>
+                    <h3>IMPORTAR JSON</h3>
                     <p>Selecione um arquivo JSON completo para substituir os dados e arquivos/fotos salvos neste navegador.</p>
                     <button type="button" class="sa-database-option-button" onclick="saDatabaseChooseImport()">Importar banco JSON</button>
                 </article>
+                <article class="sa-database-entry-option sa-database-option-cache">
+                    <span class="sa-database-option-icon"><i class="fa-solid fa-database" aria-hidden="true"></i></span>
+                    <h3>MEMÓRIA DO NAVEGADOR</h3>
+                    <p>Abre os dados locais que o SA já guardou neste navegador, sem importar arquivo e sem apagar o banco.</p>
+                    <button type="button" class="sa-database-option-button" onclick="saDatabaseOpenBrowserCache()">Abrir dados salvos</button>
+                </article>
                 <article class="sa-database-entry-option sa-database-option-empty">
                     <span class="sa-database-option-icon"><i class="fa-solid fa-circle-plus" aria-hidden="true"></i></span>
-                    <h3>Abrir banco de dados novo</h3>
+                    <h3>ABRIR BANCO NOVO</h3>
                     <p>Limpa o banco e as preferências salvos pelo SA neste navegador e abre uma base nova.</p>
                     <button type="button" class="sa-database-option-button" onclick="saDatabaseStartEmpty()">Abrir banco novo</button>
                 </article>
@@ -649,8 +664,8 @@
         </div>
     </section>
 
-    <script src="backup.js?v=sa-local-v14-athlete-photo-json-100kb-20261102"></script>
-    <script src="database-json.js?v=sa-local-v14-athlete-photo-json-100kb-20261102"></script>
-    <script src="script.js?v=sa-local-v14-athlete-photo-json-100kb-20261102"></script>
+    <script src="backup.js?v=sa-local-v14-browser-cache-choice-20261102"></script>
+    <script src="database-json.js?v=sa-local-v14-browser-cache-choice-20261102"></script>
+    <script src="script.js?v=sa-local-v14-browser-cache-choice-20261102"></script>
 </body>
 </html>

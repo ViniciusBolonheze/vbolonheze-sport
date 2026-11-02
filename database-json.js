@@ -67,14 +67,39 @@
             await waitForAppReady();
             const title = byId('sa-database-entry-title');
             const eyebrow = byId('sa-database-entry-eyebrow');
-            if (title) title.textContent = context === 'active' ? 'Selecionar banco de dados' : 'Importar ou abrir banco novo?';
+            if (title) title.textContent = context === 'active' ? 'Selecionar banco de dados' : 'Como deseja abrir o SA?';
             if (eyebrow) eyebrow.textContent = context === 'active' ? 'Banco local' : 'Teste grátis';
             openOverlay();
-            setStatus('Escolha importar um banco existente ou abrir um banco novo. A opção selecionada será aplicada imediatamente.', 'info');
+            setStatus('Escolha importar um JSON, abrir os dados locais salvos ou começar com um banco novo.', 'info');
         } catch (error) {
             console.error('Preparação da tela de banco local:', error);
             setStatus(error.message || 'Não foi possível abrir as opções do banco.', 'error');
             openOverlay();
+        }
+    }
+
+    async function openBrowserCache() {
+        if (operationInProgress) return;
+        setBusy(true);
+        try {
+            // startFreeTrial aguarda SA_READY antes de abrir este menu; o banco local já foi carregado do IndexedDB/localStorage.
+            await waitForAppReady();
+            if (typeof SAStorage === 'undefined' || typeof SAStorage.setItem !== 'function') {
+                throw new Error('O armazenamento local do navegador não está disponível.');
+            }
+            if (typeof enterSystem !== 'function') throw new Error('A tela principal do SA não foi carregada. Atualize a página e tente novamente.');
+            SAStorage.setItem('sa_mode', 'free_trial');
+            if (SAStorage.getItem('sa_mode') !== 'free_trial') throw new Error('Não foi possível ativar o acesso local do SA.');
+            setStatus('Abrindo os dados já salvos neste navegador, sem apagar o banco…', 'success');
+            setBusy(false);
+            closeOverlay();
+            enterSystem();
+        } catch (error) {
+            console.error('Abertura dos dados locais do navegador:', error);
+            const message = error.message || 'Não foi possível abrir os dados salvos neste navegador.';
+            setStatus(message, 'error');
+            setBusy(false);
+            alert(message);
         }
     }
 
@@ -678,6 +703,7 @@
     window.saDatabaseCloseEntry = closeOverlay;
     window.saDatabaseChooseImport = chooseImportFile;
     window.saDatabaseHandleImportFile = handleImportFile;
+    window.saDatabaseOpenBrowserCache = openBrowserCache;
     window.saDatabaseStartEmpty = startEmptyDatabase;
     window.saDatabaseExport = exportDatabase;
     window.saDatabaseShowExportReminder = showExportReminder;

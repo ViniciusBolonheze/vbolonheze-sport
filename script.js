@@ -201,6 +201,30 @@ function saSiteAvailableYears() {
     if (typeof excelData !== 'undefined' && Array.isArray(excelData)) excelData.forEach(row => { const y = saSiteYearFromRow(row); if (y) years.add(y); });
     return [...years].sort((a,b) => Number(a)-Number(b));
 }
+const SA_SITE_ATHLETE_YEAR_MIN = 1986;
+const SA_SITE_ATHLETE_YEAR_MAX = 2026;
+function saSiteAthleteFormYears() {
+    return Array.from({ length: SA_SITE_ATHLETE_YEAR_MAX - SA_SITE_ATHLETE_YEAR_MIN + 1 }, (_, index) => String(SA_SITE_ATHLETE_YEAR_MIN + index));
+}
+function saSitePopulateAthleteYearSelect(select, selectedYear, preserveLegacyYear = false) {
+    if (!select) return;
+    const years = saSiteAthleteFormYears();
+    const requested = String(selectedYear === undefined || selectedYear === null ? select.value || '' : selectedYear).trim();
+    const isLegacyYear = preserveLegacyYear && /^\d{4}$/.test(requested) && !years.includes(requested);
+    const chosen = years.includes(requested) || isLegacyYear ? requested : String(SA_SITE_ATHLETE_YEAR_MAX);
+    const options = [];
+    if (isLegacyYear) options.push(`<option value="${saSiteEscape(requested)}">${saSiteEscape(requested)} (cadastro atual)</option>`);
+    options.push(...years.map(year => `<option value="${saSiteEscape(year)}">${saSiteEscape(year)}</option>`));
+    select.innerHTML = options.join('');
+    select.value = chosen;
+}
+function saSiteAthleteAvailableYears() {
+    const years = new Set();
+    if (typeof excelData !== 'undefined' && Array.isArray(excelData)) {
+        excelData.forEach(row => { const year = saSiteYearFromRow(row); if (year) years.add(year); });
+    }
+    return [...years].sort((a,b) => Number(a)-Number(b));
+}
 function saSiteNewCategoryId(label, used = []) {
     const base = saSiteSlug(label);
     let id = base, suffix = 2;
@@ -210,7 +234,8 @@ function saSiteNewCategoryId(label, used = []) {
 function saSiteRenderYearChecks(containerId, className, handler) {
     const box = document.getElementById(containerId); if (!box) return;
     const checked = new Set([...box.querySelectorAll('input:checked')].map(x => String(x.value)));
-    box.innerHTML = saSiteAvailableYears().map(year => `<label><input type="checkbox" class="${className}" value="${saSiteEscape(year)}" ${checked.has(year) ? 'checked' : ''} onchange="${handler}"> ${saSiteEscape(year)}</label>`).join('');
+    const years = containerId === 'atletas-anos-filter-items' ? saSiteAthleteAvailableYears() : saSiteAvailableYears();
+    box.innerHTML = years.map(year => `<label><input type="checkbox" class="${className}" value="${saSiteEscape(year)}" ${checked.has(year) ? 'checked' : ''} onchange="${handler}"> ${saSiteEscape(year)}</label>`).join('');
 }
 function saSiteRefreshCategoryUI() {
     saSiteRenderYearChecks('atletas-anos-filter-items', 'year-chk', 'renderAtletasScreen()');
@@ -235,12 +260,7 @@ function saSiteRefreshCategoryUI() {
         pfYear.value = years.includes(current) ? current : 'todos';
     }
     const addYear = document.getElementById('add-ano');
-    if (addYear) {
-        const current = addYear.value;
-        const years = saSiteAvailableYears();
-        addYear.innerHTML = years.map(y => `<option value="${saSiteEscape(y)}">${saSiteEscape(y)}</option>`).join('');
-        addYear.value = years.includes(current) ? current : (years[years.length - 1] || '');
-    }
+    if (addYear) saSitePopulateAthleteYearSelect(addYear, addYear.value, true);
 }
 function saSiteMixColors(a, b, ratio = 0.22) {
     const rgb = hex => [1,3,5].map(i => parseInt(hex.slice(i, i+2), 16));
@@ -1129,7 +1149,7 @@ async function startFreeTrial() {
         else await loadFromStorage();
         const localDb = await saLocalOpenDb();
         if (!localDb && !SAStorage.persistent) throw new Error('O navegador não disponibilizou armazenamento local persistente.');
-        // Cada clique em Teste grátis inicia a tela de escolha: importar um JSON ou abrir um banco novo.
+        // Cada clique em Teste grátis permite importar um JSON, usar os dados locais já salvos ou abrir um banco novo.
         try {
             if (navigator.storage && typeof navigator.storage.persist === 'function') navigator.storage.persist().catch(() => {});
         } catch (_) {}
@@ -1552,6 +1572,7 @@ function closeModal() { document.getElementById('fichaModal').style.display = 'n
 window.onclick = function(event) { if (event.target === document.getElementById('fichaModal')) closeModal(); }
 
 function renderAtletasScreen() {
+    saSiteRenderYearChecks('atletas-anos-filter-items', 'year-chk', 'renderAtletasScreen()');
     const selectedYears = Array.from(document.querySelectorAll('.year-chk:checked')).map(chk => chk.value);
     const posLists = { 'goleiros': document.getElementById('list-goleiros'), 'zagueiros': document.getElementById('list-zagueiros'), 'laterais': document.getElementById('list-laterais'), 'volantes': document.getElementById('list-volantes'), 'meias': document.getElementById('list-meias'), 'atacantes': document.getElementById('list-atacantes'), 'extremos': document.getElementById('list-extremos') };
     for (let key in posLists) { if (posLists[key]) posLists[key].innerHTML = ''; }
@@ -1563,8 +1584,7 @@ function renderAtletasScreen() {
         let nomeExibicao = Object.keys(row).find(k => k.toLowerCase().includes('apelido')); nomeExibicao = nomeExibicao && row[nomeExibicao] ? row[nomeExibicao] : '';
         if (!nomeExibicao) { let nm = Object.keys(row).find(k => k.toLowerCase().includes('nome')); nomeExibicao = nm && row[nm] ? row[nm] : 'Sem Nome'; }
         
-        let posicao = Object.keys(row).find(k => k.toLowerCase().includes('posição') || k.toLowerCase().includes('posicao'));
-        posicao = posicao ? String(row[posicao]).toLowerCase() : '';
+        let posicao = String(valorPosicaoPrincipalAtleta(row) || '').toLowerCase();
         
         let targetBox = 'meias';
         if (posicao.includes('goleiro')) targetBox = 'goleiros'; else if (posicao.includes('zagueiro')) targetBox = 'zagueiros'; else if (posicao.includes('lateral')) targetBox = 'laterais'; else if (posicao.includes('volante')) targetBox = 'volantes'; else if (posicao.includes('atacante')) targetBox = 'atacantes'; else if (posicao.includes('extremo') || posicao.includes('ponta')) targetBox = 'extremos';
@@ -1919,8 +1939,23 @@ function valorCampoAtleta(row, termos) {
     const chave = Object.keys(row || {}).find(k => termos.some(t => String(k).toLowerCase().trim() === String(t).toLowerCase().trim() || String(k).toLowerCase().includes(String(t).toLowerCase())));
     return chave && row[chave] !== undefined && row[chave] !== null ? row[chave] : '';
 }
+function valorCampoAtletaExato(row, nomes) {
+    const keys = Object.keys(row || {});
+    for (const nome of nomes) {
+        const chave = keys.find(k => String(k).trim().toLowerCase() === String(nome).trim().toLowerCase());
+        if (chave && row[chave] !== undefined && row[chave] !== null && String(row[chave]).trim() !== '') return row[chave];
+    }
+    return '';
+}
+function valorPosicaoPrincipalAtleta(row) {
+    const posicao1 = valorCampoAtletaExato(row, ['Posição 1', 'posicao 1', 'Posição1', 'posicao1']);
+    if (String(posicao1 || '').trim()) return posicao1;
+    const posicaoGenerica = valorCampoAtletaExato(row, ['Posição', 'posicao']);
+    if (String(posicaoGenerica || '').trim()) return posicaoGenerica;
+    return valorCampoAtletaExato(row, ['Posição 2', 'posicao 2', 'Posição2', 'posicao2']);
+}
 
-const OPCOES_POSICAO_ATLETA_COMPLETAS = ['Goleiro','Zagueiro','Zagueiro Dir.','Zagueiro Esq.','Lateral Dir.','Lateral Esq.','Volante','1º Volante','2º Volante','Meia','Atacante','Ponta Dir.','Ponta Esq.','Extremo'];
+const OPCOES_POSICAO_ATLETA_COMPLETAS = ['Goleiro','Zagueiro','Zagueiro Dir.','Zagueiro Esq.','Lateral','Lateral Dir.','Lateral Esq.','Volante','1º Volante','2º Volante','Meia','Atacante','Ponta Dir.','Ponta Esq.','Extremo'];
 function normalizarPosicaoAtletaValor(valor){
     const txt = String(valor||'').trim();
     if(!txt)return '';
@@ -1930,7 +1965,7 @@ function normalizarPosicaoAtletaValor(valor){
         'zagueiro':'Zagueiro',
         'zagueiro dir':'Zagueiro Dir.','zagueiro dir.':'Zagueiro Dir.','zagueiro direito':'Zagueiro Dir.',
         'zagueiro esq':'Zagueiro Esq.','zagueiro esq.':'Zagueiro Esq.','zagueiro esquerdo':'Zagueiro Esq.',
-        'lateral':'Lateral Dir.',
+        'lateral':'Lateral',
         'lateral dir':'Lateral Dir.','lateral dir.':'Lateral Dir.','lateral direito':'Lateral Dir.',
         'lateral esq':'Lateral Esq.','lateral esq.':'Lateral Esq.','lateral esquerdo':'Lateral Esq.',
         'volante':'Volante','1 volante':'1º Volante','1º volante':'1º Volante','primeiro volante':'1º Volante',
@@ -1950,10 +1985,11 @@ function garantirOpcoesPosicaoAtletaModal(){
     select.value=OPCOES_POSICAO_ATLETA_COMPLETAS.includes(valorAtual)?valorAtual:'Meia';
 }
 function posicaoEdicaoAtleta(row){
-    const pos2=normalizarPosicaoAtletaValor(valorCampoAtleta(row,['Posição 2','posicao 2']));
-    const pos1=normalizarPosicaoAtletaValor(valorCampoAtleta(row,['Posição 1','posicao 1','posição','posicao']));
-    if(pos2 && OPCOES_POSICAO_ATLETA_COMPLETAS.includes(pos2))return pos2;
-    if(pos1 && OPCOES_POSICAO_ATLETA_COMPLETAS.includes(pos1))return pos1;
+    // O cadastro é exibido pelo campo Posição 1; prefira o mesmo valor ao abrir a edição.
+    const posicaoPrincipal = normalizarPosicaoAtletaValor(valorPosicaoPrincipalAtleta(row));
+    if (posicaoPrincipal && OPCOES_POSICAO_ATLETA_COMPLETAS.includes(posicaoPrincipal)) return posicaoPrincipal;
+    const posicaoSecundaria = normalizarPosicaoAtletaValor(valorCampoAtletaExato(row, ['Posição 2', 'posicao 2', 'Posição2', 'posicao2']));
+    if (posicaoSecundaria && OPCOES_POSICAO_ATLETA_COMPLETAS.includes(posicaoSecundaria)) return posicaoSecundaria;
     return 'Meia';
 }
 function openAddAthleteModal() {
@@ -1964,9 +2000,8 @@ function openAddAthleteModal() {
     uploadedPhotoBase64 = '';
     const form = document.getElementById('athlete-form');
     if (form) form.reset();
-    const availableYears = saSiteAvailableYears();
     const yearSelect = document.getElementById('add-ano');
-    if (yearSelect) yearSelect.value = availableYears[availableYears.length - 1] || '';
+    saSitePopulateAthleteYearSelect(yearSelect, String(SA_SITE_ATHLETE_YEAR_MAX), false);
     garantirOpcoesPosicaoAtletaModal();
     const fileLabel = document.getElementById('file-label-text');
     if (fileLabel) fileLabel.textContent = 'Selecionar Foto';
@@ -1988,8 +2023,8 @@ function openEditAthleteModal() {
     const form = document.getElementById('athlete-form');
     if (form) form.reset();
     garantirOpcoesPosicaoAtletaModal();
-    const availableYears = saSiteAvailableYears();
-    document.getElementById('add-ano').value = saSiteYearFromRow(row) || availableYears[availableYears.length - 1] || '';
+    const athleteYear = saSiteYearFromRow(row);
+    saSitePopulateAthleteYearSelect(document.getElementById('add-ano'), athleteYear, true);
     document.getElementById('add-nome').value = valorCampoAtleta(row, ['NOME COMPLETO', 'nome completo', 'nome']);
     document.getElementById('add-apelido').value = valorCampoAtleta(row, ['APELIDO', 'apelido']);
     document.getElementById('add-nascimento').value = convertExcelDate(valorCampoAtleta(row, ['Data de nascimento', 'nascimento']));
@@ -2196,14 +2231,19 @@ async function saveNewAthlete(event) {
         excelColumns.forEach(col => { row[col] = ''; });
     }
     const previousPhotoValue = isEdit ? valorCampoAtleta(row, ['Foto', 'foto', 'imagem']) : '';
+    const previousPositionValue = isEdit ? posicaoEdicaoAtleta(row) : '';
     row['Ano'] = document.getElementById('add-ano').value;
     row['NOME COMPLETO'] = document.getElementById('add-nome').value;
     row['APELIDO'] = document.getElementById('add-apelido').value;
     row['Data de nascimento'] = document.getElementById('add-nascimento').value;
     const posicaoSelecionada = normalizarPosicaoAtletaValor(document.getElementById('add-posicao').value) || 'Meia';
-    row['Posição 1'] = posicaoSelecionada;
-    row['Posição 2'] = posicaoSelecionada;
-    if(!excelColumns.includes('Posição 2')) excelColumns.push('Posição 2');
+    // Ao salvar outros campos (ex.: apenas a foto), mantenha Posição 1 e Posição 2 intactas.
+    if (!isEdit || posicaoSelecionada !== previousPositionValue) {
+        row['Posição 1'] = posicaoSelecionada;
+        row['Posição 2'] = posicaoSelecionada;
+        if (!excelColumns.includes('Posição 1')) excelColumns.push('Posição 1');
+        if (!excelColumns.includes('Posição 2')) excelColumns.push('Posição 2');
+    }
     row['CIDADE'] = document.getElementById('add-cidade').value;
     row['Contato'] = document.getElementById('add-contato').value;
     row['RG'] = document.getElementById('add-rg').value;
@@ -3771,7 +3811,7 @@ function closeConvocacaoModal() { document.getElementById('convocacao-modal').st
 function renderConvocacaoScreen() {
     const yearsBar = document.getElementById('convocacao-years-bar'); if (!yearsBar) return;
     yearsBar.innerHTML = '';
-    saSiteAvailableYears().forEach(ano => {
+    saSiteAthleteAvailableYears().forEach(ano => {
         const label = document.createElement('label'); label.style.cssText = 'display: flex; align-items: center; gap: 5px; cursor: pointer; font-weight: 500;';
         const chk = document.createElement('input'); chk.type = 'checkbox'; chk.value = ano; chk.checked = false; chk.className = 'conv-year-chk'; chk.onchange = renderConvocacaoLists;
         label.appendChild(chk); label.appendChild(document.createTextNode(ano)); yearsBar.appendChild(label);
@@ -14298,19 +14338,29 @@ function modernV3BuildHome(){
  home.dataset.modernV3Home='1';
  home.innerHTML=`<div class="modern-v3-dashboard">
   <section class="modern-v3-hero">
-   <div><h1>VBolonheze Sports</h1><p>Gestão completa de atletas, performance, jogos, convocações e relatórios</p><div class="modern-v3-hero-reports"><button onclick="modernV3Action('relatorio-fisico',event)"><i>📊</i><strong>Relatório Físico</strong></button><button onclick="modernV3Action('trabalho-diario',event)"><i>📄</i><strong>Trabalho Diário</strong></button><button onclick="modernV3Action('planejamento',event)"><i>🗓️</i><strong>Planejamento</strong></button><button onclick="modernV3Action('psr',event)"><i>💚</i><strong>PSR</strong></button><button onclick="modernV3Action('pse',event)"><i>🔥</i><strong>PSE</strong></button><button onclick="modernV3Action('avaliacao-diaria',event)"><i>✅</i><strong>Avaliação Diária</strong></button><button onclick="modernV3Action('goleiros',event)"><i>🧤</i><strong>Goleiros</strong></button><button data-prep-alert="1" onclick="modernV3Action('preparacao-fisica',event)"><i>🩺</i><strong>Preparação Física</strong></button><button onclick="modernV3Action('monitoramento-carga',event)"><i>📈</i><strong>Monitoramento</strong></button><button onclick="modernV3Action('portal-atleta',event)"><i>🏅</i><strong>Portal do Atleta</strong></button></div></div>
+   <div><h1>VBolonheze Sports</h1><p>Acesso rápido aos módulos mais usados do Sistema Aberto</p><div class="modern-v3-hero-reports">
+    <button onclick="modernV3Navigate('atletas',event)"><i>👥</i><strong>Atletas</strong></button>
+    <button onclick="modernV3Navigate('convocacao',event)"><i>📋</i><strong>Convocação</strong></button>
+    <button onclick="modernV3Navigate('jogos',event)"><i>⚽</i><strong>Jogos</strong></button>
+    <button onclick="modernV3Navigate('testes',event)"><i>🏃</i><strong>Testes Físicos</strong></button>
+    <button onclick="modernV3Action('relatorio-fisico',event)"><i>📊</i><strong>Relatório Físico</strong></button>
+    <button onclick="modernV3Navigate('prancheta',event)"><i>📐</i><strong>Prancheta</strong></button>
+    <button onclick="modernV3Action('criacao-treino',event)"><i>📝</i><strong>Criação de Treinos</strong></button>
+    <button onclick="modernV3Action('fotos',event)"><i>📸</i><strong>Fotos</strong></button>
+    <button onclick="modernV3Action('trabalho-diario',event)"><i>📄</i><strong>Trabalho diário</strong></button>
+    <button onclick="modernV3Action('avaliacao-diaria',event)"><i>✅</i><strong>Avaliação Diária</strong></button>
+   </div></div>
    <img src="sa-logo.svg" alt="VBolonheze Sports">
   </section>
-  <h3 class="modern-v3-block-title">Módulos principais</h3>
+  <h3 class="modern-v3-block-title">Módulos</h3>
   <div class="modern-v3-grid">
-   <button onclick="modernV3Navigate('atletas',event)"><i>👥</i><strong>Atletas</strong><small>Ficha, posições, edição e anotações.</small></button>
-   <button onclick="modernV3Navigate('convocacao',event)"><i>📋</i><strong>Convocação</strong><small>Lista, campo e controle de convocados.</small></button>
-   <button onclick="modernV3Navigate('jogos',event)"><i>⚽</i><strong>Jogos</strong><small>Jogos, estatísticas e relatórios.</small></button>
-   <button onclick="modernV3Navigate('testes',event)"><i>🏃</i><strong>Testes físicos</strong><small>Avaliações físicas, dados e grupos.</small></button>
-   <button onclick="modernV3Action('fotos',event)"><i>📸</i><strong>Fotos</strong><small>Galeria e fotos dos atletas.</small></button>
-   <button onclick="modernV3Navigate('prancheta',event)"><i>📐</i><strong>Prancheta</strong><small>Organização tática virtual.</small></button>
-   <button onclick="modernV3Action('criacao-treino',event)"><i>📝</i><strong>Criação de treinos</strong><small>Planilha editável e PDF.</small></button>
-   <button onclick="modernV3Action('atletas-extras',event)"><i>🔀</i><strong>Atletas Extras</strong><small>Ano de participação por módulo.</small></button>
+   <button onclick="modernV3Action('pse',event)"><i>🔥</i><strong>PSE</strong><small>Percepção subjetiva de esforço.</small></button>
+   <button onclick="modernV3Action('psr',event)"><i>💚</i><strong>PSR</strong><small>Percepção subjetiva de recuperação.</small></button>
+   <button onclick="modernV3Action('monitoramento-carga',event)"><i>📈</i><strong>Monitoramento</strong><small>Acompanhamento de carga e evolução.</small></button>
+   <button data-prep-alert="1" onclick="modernV3Action('preparacao-fisica',event)"><i>🩺</i><strong>Preparação Física</strong><small>Queixas, avaliações e preparação.</small></button>
+   <button onclick="modernV3Action('atletas-extras',event)"><i>🔀</i><strong>Atletas Extras</strong><small>Vínculos de participação por ano.</small></button>
+   <button onclick="modernV3Navigate('convocacao-manual',event)"><i>✍️</i><strong>Convocação Manual</strong><small>Montagem manual de convocações.</small></button>
+   <button onclick="modernV3Action('portal-atleta',event)"><i>🏅</i><strong>Portal do Atleta</strong><small>Acesso às informações individuais.</small></button>
   </div>
  </div>`;
  renderIndicadorPreparacaoFisica();
