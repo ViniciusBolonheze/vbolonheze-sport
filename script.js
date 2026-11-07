@@ -1305,6 +1305,68 @@ function saNomeArquivoPDF(nome){
  const limpo=String(nome||'Documento').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[\\/:*?"<>|\x00-\x1f]+/g,' ').replace(/\s+/g,' ').trim().replace(/[. ]+$/,'');
  return (limpo||'Documento').slice(0,150).replace(/\.pdf$/i,'')+'.pdf';
 }
+// Arquivos locais file:// não podem ser lidos por fetch/canvas sem permissão.
+// A pasta escolhida é acessada apenas para imagens já presentes no documento;
+// nenhum conteúdo é enviado a servidores, e nenhum arquivo é alterado.
+let saPdfPastaImagens=null,saPdfPastaPendente=null;
+function saPdfSelecionarPasta(janela=window){
+ if(saPdfPastaImagens)return Promise.resolve(saPdfPastaImagens);
+ if(saPdfPastaPendente)return saPdfPastaPendente;
+ saPdfPastaPendente=new Promise((resolve,reject)=>{
+  const d=janela.document,box=d.createElement('div');box.id='sa-pdf-pasta-local';box.setAttribute('role','dialog');box.setAttribute('aria-label','Permitir imagens locais no PDF');
+  box.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#0009;display:flex;align-items:center;justify-content:center;padding:16px';
+  const panel=d.createElement('div');panel.style.cssText='background:white;color:#173b59;padding:20px;border-radius:12px;max-width:460px;width:100%;font:16px/1.4 Arial,sans-serif';
+  const p=d.createElement('p');p.textContent='Para incluir as imagens locais no PDF, escolha a pasta do Sistema Aberto — a mesma onde está o index.html. O acesso é somente para leitura e nada é enviado pela internet.';panel.appendChild(p);
+  const choose=d.createElement('button');choose.type='button';choose.textContent='Escolher pasta do Sistema Aberto';choose.style.cssText='padding:10px;margin-right:8px';
+  const cancel=d.createElement('button');cancel.type='button';cancel.textContent='Cancelar';cancel.style.cssText='padding:10px';panel.append(choose,cancel);
+  const nota=d.createElement('small');nota.style.cssText='display:block;margin-top:12px';nota.textContent='Se continuar sem as imagens locais, elas não aparecerão no PDF. Os arquivos e cadastros originais não serão alterados.';panel.appendChild(nota);
+  const sem=d.createElement('button');sem.type='button';sem.textContent='Gerar sem imagens locais';sem.style.cssText='padding:10px;margin:8px 8px 0 0';sem.onclick=()=>finish(null,null);panel.appendChild(sem);
+  if(typeof janela.showDirectoryPicker!=='function'){choose.disabled=true;p.textContent='Este navegador não permite autorizar a pasta. Você pode gerar o PDF sem as imagens que estão em arquivos locais; as imagens salvas no cadastro continuarão intactas.';}
+  box.appendChild(panel);d.body.appendChild(box);
+  const finish=(handle,error)=>{box.remove();if(error)reject(error);else resolve(handle);};
+  cancel.onclick=()=>finish(null,new DOMException('Exportação cancelada.','AbortError'));
+  choose.onclick=async()=>{try{
+   if(typeof janela.showDirectoryPicker!=='function')throw new Error('Este navegador não permite escolher uma pasta para ler as imagens locais.');
+   const dir=await janela.showDirectoryPicker({mode:'read'});
+   await dir.getFileHandle('index.html');await dir.getFileHandle('script.js');
+   saPdfPastaImagens=dir;finish(dir,null);
+  }catch(e){if(e?.name==='AbortError')return;p.textContent='Não foi possível usar esta pasta. Escolha a pasta que contém index.html e script.js. '+(e?.message||'');}
+  };
+  choose.focus();
+ }).finally(()=>{saPdfPastaPendente=null;});return saPdfPastaPendente;
+}
+async function saPdfPrepararImagensLocal(root,original=root,janela=window){
+ if(location.protocol!=='file:'||!root)return ()=>{};
+ const base=new URL('.',document.baseURI),doc=root.ownerDocument||document,view=doc.defaultView||window;
+ const imagens=[...root.querySelectorAll('img')];
+ const pares=[];
+ for(const img of imagens){const raw=img.getAttribute('src')||'';let url;try{url=new URL(raw,doc.baseURI||document.baseURI)}catch(_){continue;}if(raw&&url.protocol==='file:')pares.push({node:img,url,kind:'img',attr:raw});}
+ // CSS de imagens de fundo também é necessário em relatórios, por exemplo campo.
+ const atual=[root,...root.querySelectorAll('*')],fontes=[original,...original.querySelectorAll('*')];
+ atual.forEach((node,i)=>{
+  const src=fontes[i];if(!src)return;let bg='';try{bg=(src.ownerDocument.defaultView||window).getComputedStyle(src).backgroundImage||'';}catch(_){}
+  if(!bg||bg==='none')return;const urls=[...bg.matchAll(/url\(["']?([^"')]+)["']?\)/g)];
+  for(const m of urls){try{const url=new URL(m[1],src.ownerDocument.baseURI||document.baseURI);if(url.protocol==='file:')pares.push({node,url,kind:'bg',background:bg,match:m[1],old:node.style.backgroundImage});}catch(_){}}
+ });
+ if(!pares.length)return ()=>{};
+ const ui=janela.frameElement?window:janela,dir=await saPdfSelecionarPasta(ui);const cache=new Map(),restore=[];
+ if(!dir){for(const item of pares){if(item.kind==='img'){restore.push(()=>item.node.setAttribute('src',item.attr));item.node.setAttribute('src','data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=');}else{restore.push(()=>{item.node.style.backgroundImage=item.old;});item.node.style.backgroundImage='none';}}return ()=>restore.reverse().forEach(fn=>fn());}
+ try{
+  for(const item of pares){
+   const href=item.url.href.split('#')[0].split('?')[0];
+   if(!href.startsWith(base.href))throw new Error('Uma imagem está fora da pasta do Sistema Aberto.');
+   const path=href.slice(base.href.length).split('/').map(decodeURIComponent).filter(Boolean);
+   if(!path.length||path.some(x=>x==='.'||x==='..'||x.includes('\\')||x.includes('/')))throw new Error('Caminho de imagem inválido.');
+   let obj=cache.get(href);
+   if(!obj){try{let folder=dir;for(const part of path.slice(0,-1))folder=await folder.getDirectoryHandle(part);const file=await (await folder.getFileHandle(path[path.length-1])).getFile();obj=view.URL.createObjectURL(file);cache.set(href,obj);}catch(e){if(e?.name==='NotFoundError'&&(item.kind==='bg'||(item.node.complete&&!item.node.naturalWidth))){if(item.kind==='bg'){restore.push(()=>{item.node.style.backgroundImage=item.old;});item.node.style.backgroundImage='none';}continue;}throw e;}}
+   if(item.kind==='img'){restore.push(()=>item.node.setAttribute('src',item.attr));item.node.setAttribute('src',obj);}
+   else{restore.push(()=>{item.node.style.backgroundImage=item.old;});item.node.style.backgroundImage=item.background.replace(item.match,obj);}
+  }
+  await Promise.all(imagens.map(img=>img.complete?Promise.resolve():new Promise(resolve=>{let done=false;const end=()=>{if(done)return;done=true;img.removeEventListener('load',end);img.removeEventListener('error',end);resolve()};img.addEventListener('load',end);img.addEventListener('error',end);setTimeout(end,5000);}))); 
+  return ()=>{restore.reverse().forEach(fn=>fn());for(const u of cache.values())view.URL.revokeObjectURL(u);};
+ }catch(e){restore.reverse().forEach(fn=>fn());for(const u of cache.values())view.URL.revokeObjectURL(u);saPdfPastaImagens=null;throw new Error('Não foi possível ler uma imagem na pasta escolhida. Confira se selecionou a pasta correta e se os arquivos de imagem existem. '+(e?.message||''));}
+}
+
 function saPodeCompartilharPDF(janela=window,file=null){
  try{
   const nav=janela.navigator;if(typeof nav.share!=='function')return false;
@@ -1339,7 +1401,7 @@ function saFalhaGerarPDF(error,imprimir,janela=window){
  const doc=janela.document,antigo=doc.getElementById('sa-pdf-pronto');if(antigo)antigo.remove();
  const box=doc.createElement('div');box.id='sa-pdf-pronto';box.setAttribute('role','dialog');box.setAttribute('aria-label','Não foi possível gerar o PDF');box.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#0009;display:flex;align-items:center;justify-content:center;padding:16px';
  const panel=doc.createElement('div');panel.style.cssText='background:white;color:#173b59;padding:20px;border-radius:12px;max-width:440px;width:100%;font:16px Arial,sans-serif';
- const msg=doc.createElement('p');msg.textContent='Não foi possível gerar o PDF. Verifique se as bibliotecas locais da pasta vendor estão disponíveis. Se desejar, use a impressão como alternativa.';panel.appendChild(msg);
+ const msg=doc.createElement('p');msg.textContent='Não foi possível gerar o PDF. '+(error?.message||'Verifique as bibliotecas locais na pasta vendor.')+' Se desejar, use a impressão como alternativa.';panel.appendChild(msg);
  const print=doc.createElement('button');print.type='button';print.textContent='Imprimir';print.style.cssText='padding:10px;margin-right:8px';print.onclick=()=>{box.remove();imprimir();};
  const fechar=doc.createElement('button');fechar.type='button';fechar.textContent='Fechar';fechar.style.cssText='padding:10px';fechar.onclick=()=>box.remove();panel.append(print,fechar);box.appendChild(panel);doc.body.appendChild(box);fechar.focus();
 }
@@ -1357,9 +1419,10 @@ function saAtivarExportacaoJanela(w){
  if(!w)return w;
  const imprimir=w.print.bind(w);let executando=false;
  w.print=async function(){
-  if(executando)return;executando=true;
+  if(executando)return;executando=true;let limparImagens=()=>{};
   try{
    const d=w.document;
+   limparImagens=await saPdfPrepararImagensLocal(d.body,d.body,w);
    await new Promise((resolve,reject)=>{const script=d.createElement('script');script.src=new URL('vendor/html2pdf.bundle.min.js',document.baseURI).href;script.onload=resolve;script.onerror=reject;d.head.appendChild(script);});
    if(typeof w.html2pdf!=='function')throw new Error('Gerador local não encontrado');
    const css=[...d.querySelectorAll('style')].map(e=>e.textContent).join(' ');
@@ -1368,15 +1431,15 @@ function saAtivarExportacaoJanela(w){
    const marginPDF=d.querySelector('.rj-page')?3:8;
    const blob=await w.html2pdf().set({margin:marginPDF,filename:nome,image:{type:'jpeg',quality:.96},html2canvas:{scale:2,useCORS:true,backgroundColor:'#ffffff',onclone:doc=>{doc.querySelectorAll('svg[viewBox]').forEach(svg=>{const vb=svg.viewBox?.baseVal;if(vb?.width&&vb?.height){if(!svg.hasAttribute('width'))svg.setAttribute('width',vb.width);if(!svg.hasAttribute('height'))svg.setAttribute('height',vb.height);}});}},jsPDF:{unit:'mm',format:'a4',orientation:landscape?'landscape':'portrait'},pagebreak:{mode:['css','legacy'],avoid:['tr']}}).from(d.body).outputPdf('blob');
    await saEntregarPDF(blob,nome,d.title||'Relatório',imprimir,w.frameElement?window:w);
-  }catch(e){saFalhaGerarPDF(e,imprimir,w.frameElement?window:w);}
-  finally{executando=false;}
+  }catch(e){if(e?.name!=='AbortError')saFalhaGerarPDF(e,imprimir,w.frameElement?window:w);}
+  finally{limparImagens();executando=false;}
  };
  return w;
 }
 async function saFichaGerarPDF(compartilhar=false){
  const element=document.getElementById('fichaExportContent');if(!element)return alert('Aguarde o carregamento da ficha.');
  if(typeof html2pdf==='undefined'){if(compartilhar)saFalhaGerarPDF(new Error('Biblioteca local de PDF ausente'),saFichaImprimir);else alert('A biblioteca de PDF local não está disponível. Use Imprimir e escolha Salvar como PDF.');return;}
- const buttons=[...document.querySelectorAll('#fichaModal .sa-ficha-actions button')];buttons.forEach(b=>b.disabled=true);
+ const buttons=[...document.querySelectorAll('#fichaModal .sa-ficha-actions button')];buttons.forEach(b=>b.disabled=true);let limparImagens=()=>{};
  try{
   const copy=element.cloneNode(true);copy.classList.add('fc-pdf-export');
   for(const id of ['fc-comentario','fc-foco']){const original=element.querySelector('#'+id),t=copy.querySelector('#'+id);if(t){const d=document.createElement('div');d.className='fc-plan-copy';d.textContent=original?.value||'—';t.replaceWith(d);}}
@@ -1386,6 +1449,7 @@ async function saFichaGerarPDF(compartilhar=false){
    const plano=copy.querySelector('.fc-plan');if(plano){plano.classList.add('fc-plan-long');plano.closest('.fc-section')?.classList.add('fc-plan-large-section');}
    planos.forEach(box=>{const texto=box.textContent;box.textContent='';let pos=0;while(pos<texto.length){let fim=Math.min(pos+350,texto.length);if(fim<texto.length){const corte=texto.lastIndexOf(' ',fim);if(corte>pos+180)fim=corte+1;}const trecho=document.createElement('div');trecho.className='fc-plan-chunk';trecho.textContent=texto.slice(pos,fim);box.appendChild(trecho);pos=fim;}});
   }
+  limparImagens=await saPdfPrepararImagensLocal(copy,element,window);
   const opt={margin:[8,7,8,7],filename:'ficha_do_atleta.pdf',image:{type:'jpeg',quality:.96},html2canvas:{scale:2,useCORS:true,onclone:doc=>{
    doc.querySelectorAll('#fc-comentario,#fc-foco').forEach(t=>{const d=doc.createElement('div');d.className='fc-plan-copy';d.textContent=t.value||'—';t.replaceWith(d);});
   }},jsPDF:{unit:'mm',format:'a4',orientation:'portrait'},pagebreak:{mode:['css','legacy'],avoid:['.fc-section:not(.fc-plan-large-section)','.fc-plan-chunk','.fc-athlete','tr']}};
@@ -1394,7 +1458,7 @@ async function saFichaGerarPDF(compartilhar=false){
   if(compartilhar){await saEntregarPDF(blob,nome,'Ficha do Atleta',saFichaImprimir);return;}
   saBaixarBlobPDF(blob,nome);
  }catch(e){if(e?.name!=='AbortError'){console.error('Erro ao gerar PDF da ficha:',e);if(compartilhar)saFalhaGerarPDF(e,saFichaImprimir);else alert('Não foi possível gerar o PDF. Tente Imprimir e escolha Salvar como PDF.');}}
- finally{buttons.forEach(b=>b.disabled=false);}
+ finally{limparImagens();buttons.forEach(b=>b.disabled=false);}
 }
 function saFichaBaixarPDF(){return saFichaGerarPDF(false);}
 function saFichaImprimir(){
@@ -5425,7 +5489,7 @@ async function abrirRelatorioJogosProfessor(){
  const {data,error}=await _saData.from('jogos').select('id,professor,numero_jogo,nome,dados,criado_em').eq('professor',professor).order('numero_jogo',{ascending:true});
  if(error){console.error(error);alert('Erro ao carregar jogos para o relatório.');return;}
  if(!data||!data.length){alert('Nenhum jogo salvo para gerar relatório.');return;}
- if(typeof saIsMobile==='function'&&saIsMobile()&&window.jspdf&&window.jspdf.jsPDF){try{if(await gerarRelatorioJogosPDFMobileDireto(data,professor))return;}catch(e){console.error('Falha no PDF direto mobile:',e);}}
+ if(location.protocol!=='file:'&&typeof saIsMobile==='function'&&saIsMobile()&&window.jspdf&&window.jspdf.jsPDF){try{if(await gerarRelatorioJogosPDFMobileDireto(data,professor))return;}catch(e){console.error('Falha no PDF direto mobile:',e);}}
  saImprimirRelatorioJogos(data,professor);
 }
 function saImprimirRelatorioJogos(data,professor,exportar=true){
@@ -13404,11 +13468,13 @@ function saOpcoesPDF(filename, orientacao='portrait', tipo='normal'){
 async function saCompartilharOuSalvarPDF(elemento, filename, orientacao='portrait', tipo='normal', titulo='VBolonheze Sports', imprimir=()=>window.print()){
  if(!elemento)return alert('Não encontrei o conteúdo para exportar.');
  if(typeof html2pdf==='undefined'){saFalhaGerarPDF(new Error('Biblioteca local de PDF ausente'),imprimir);return;}
- try{
+ let limparImagens=()=>{};try{
   const wrapper=saPrepararWrapperPDF(elemento,orientacao,tipo);
+  limparImagens=await saPdfPrepararImagensLocal(wrapper,elemento,window);
   const blob=await html2pdf().from(wrapper).set(saOpcoesPDF(filename,orientacao,tipo)).outputPdf('blob');
   await saEntregarPDF(blob,filename,titulo,imprimir);
- }catch(e){saFalhaGerarPDF(e,imprimir);}
+ }catch(e){if(e?.name!=='AbortError')saFalhaGerarPDF(e,imprimir);}
+ finally{limparImagens();}
 }
 function saAjustarTextosMobileExportar(){
  if(!saIsMobile())return;
@@ -14917,11 +14983,13 @@ window.onload=function(){
  }
  function abrirImpressao(){ajustar();setTimeout(function(){window.print();},100);}
  function load(src){return new Promise(function(res,rej){var s=document.createElement('script');s.src=src;s.onload=res;s.onerror=rej;document.head.appendChild(s);});}
- var fonts=document.fonts&&document.fonts.ready?document.fonts.ready.catch(function(){}):Promise.resolve();
+ var fonts=document.fonts&&document.fonts.ready?document.fonts.ready.catch(function(){}):Promise.resolve(),limparImagens=function(){};
  Promise.all([esperarImagens(),fonts]).then(function(){
   ajustar();
   var vendorBase=${JSON.stringify(new URL('vendor/',document.baseURI||location.href).href)};
-  return Promise.all([load(vendorBase+'html2canvas.min.js'),load(vendorBase+'jspdf.umd.min.js')]).then(function(){
+  var origem=(window.opener&&!window.opener.closed)?window.opener:window.parent;
+  var preparar=origem&&origem.saPdfPrepararImagensLocal?origem.saPdfPrepararImagensLocal(el,el,window):Promise.resolve(function(){});
+  return preparar.then(function(limpar){limparImagens=limpar;return Promise.all([load(vendorBase+'html2canvas.min.js'),load(vendorBase+'jspdf.umd.min.js')]);}).then(function(){
    // Renderize sem a transformação de tela e ajuste a resolução para não
    // exceder os limites de canvas em fichas compridas, também no celular.
    el.style.transform='none';
@@ -14929,7 +14997,7 @@ window.onload=function(){
    if(!isFinite(rasterScale)||rasterScale<=0.01)throw new Error('Ficha longa demais para gerar o PDF neste navegador.');
    return html2canvas(el,{scale:rasterScale,useCORS:true,backgroundColor:'#fff',logging:false,windowWidth:794,width:Math.ceil(naturalW),height:Math.ceil(naturalH),onclone:function(doc){var container=doc.getElementById('page');if(container)container.style.overflow='visible';}});
   }).then(function(canvas){
-   ajustar();
+   ajustar();limparImagens();limparImagens=function(){};
    if(!canvas.width||!canvas.height)throw new Error('Não foi possível gerar a imagem da ficha.');
    var J=(window.jspdf&&window.jspdf.jsPDF)||window.jsPDF;
    if(!J)throw new Error('Gerador de PDF não encontrado.');
@@ -14948,7 +15016,7 @@ window.onload=function(){
    var host=(window.opener&&!window.opener.closed&&window.opener.saEntregarPDF)?window.opener:(window.parent&&window.parent.saEntregarPDF?window.parent:null);
    if(!host){alert('PDF gerado. Baixe o arquivo para anexá-lo no WhatsApp.');baixar();return;}
    host.saEntregarPDF(blob,pdfNome,'Planilha de treino',abrirImpressao,window.frameElement?host:window).catch(function(err){console.error(err);alert('Não foi possível abrir o compartilhamento. Baixe o PDF para anexá-lo.');baixar();});
-  }).catch(function(err){console.warn('PDF direto indisponível.',err);if(pdfModo==='salvar')alert('Não foi possível salvar o PDF. Confira as bibliotecas locais e tente novamente.');else {var host=window.opener||window.parent;if(host&&host.saFalhaGerarPDF)host.saFalhaGerarPDF(err,abrirImpressao,window.frameElement?host:window);else alert('Não foi possível gerar o PDF. Verifique as bibliotecas locais.');}});
+  }).catch(function(err){limparImagens();if(err&&err.name==='AbortError')return;console.warn('PDF direto indisponível.',err);if(pdfModo==='salvar')alert('Não foi possível salvar o PDF. Confira as bibliotecas locais e tente novamente.');else {var host=window.opener||window.parent;if(host&&host.saFalhaGerarPDF)host.saFalhaGerarPDF(err,abrirImpressao,window.frameElement?host:window);else alert('Não foi possível gerar o PDF. Verifique as bibliotecas locais.');}});
  }).catch(function(err){console.warn('Não foi possível preparar a ficha.',err);if(pdfModo==='salvar')alert('Não foi possível salvar o PDF.');else{var host=window.opener||window.parent;if(host&&host.saFalhaGerarPDF)host.saFalhaGerarPDF(err,abrirImpressao,window.frameElement?host:window);else alert('Não foi possível gerar o PDF.');}});
 };
 <\/script></body></html>`);
