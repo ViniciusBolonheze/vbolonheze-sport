@@ -85,25 +85,10 @@
     }
 
     async function connect() {
-        const localHost = ['localhost', '127.0.0.1', '::1'].includes(String(window.location && window.location.hostname || '').toLowerCase());
-        if (!localHost) {
-            window.SA_LOCAL_SERVER_READY = false;
-            setStatus('Backup ZIP legado: disponível somente no servidor local do computador', 'warning');
-            return false;
-        }
-        try {
-            const response = await fetch('/api/status', { cache: 'no-store', credentials: 'same-origin' });
-            if (!response.ok) throw new Error('Servidor local indisponível.');
-            const result = await response.json();
-            if (!result || result.ok !== true || String(result.appVersion) !== '13') throw new Error('Servidor local incompatível.');
-            window.SA_LOCAL_SERVER_READY = true;
-            setStatus('Servidor local conectado', 'ok');
-            return true;
-        } catch (error) {
-            window.SA_LOCAL_SERVER_READY = false;
-            setStatus('Dados no navegador — servidor local desconectado', 'warning');
-            return false;
-        }
+        // Mantém a API legada desligada: armazenamento no navegador e backup JSON.
+        window.SA_LOCAL_SERVER_READY = false;
+        setStatus('Dados salvos neste navegador — exporte o JSON para backup', 'ok');
+        return false;
     }
 
     function mirrorStorage(operation, key, value) {

@@ -10,7 +10,7 @@
     <link rel="apple-touch-icon" href="sa-logo.svg">
     <meta name="theme-color" content="#173b59">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; base-uri 'self'; object-src 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' data: blob:; media-src 'self' data: blob:; frame-src 'self' about: data: blob:; worker-src 'self' blob:">
-    <link rel="stylesheet" href="style.css?v=sa-local-v14-browser-cache-choice-20261102">
+    <link rel="stylesheet" href="style.css?v=sa-ficha-atleta-20261107">
     <!-- Bibliotecas empacotadas localmente para uso com ou sem internet -->
     <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
     <script src="vendor/xlsx.full.min.js"></script>
@@ -37,7 +37,6 @@
     </style>
 </head>
 <body class="modern-v3 sa-login-mode">
-    <div id="relogio-inatividade-sistema" title="Tempo para atualização automática">↻ 10:00</div>
 
     <!-- Cabeçalho Superior -->
     <header class="top-header">
@@ -169,7 +168,6 @@
                         <button class="vba-red-btn" onclick="deleteSelectedAthlete()">Excluir Atleta</button>
                         <button class="vba-gray-btn" onclick="openEditAthleteModal()" style="background-color: #f39c12; color: #111;">Editar Atleta</button>
                         <button class="vba-gray-btn" onclick="openFichaAtleta(selectedAthleteIndex)" style="background-color: #173b59; color: #40b8a8;">Ver Ficha Atleta</button>
-<button class="vba-gray-btn" onclick="openAnotacoesModal(selectedAthleteIndex)" style="background-color: #0984e3; color: #fff;">Anotações</button>
 </div>
                     <div class="vba-positions-grid">
                         <div class="pos-box"><div class="pos-header">Goleiros</div><div class="pos-list" id="list-goleiros"></div></div>
@@ -420,13 +418,13 @@
                 <span class="vba-modal-close" onclick="closeAddAthleteModal()">&times;</span>
             </div>
             <form id="athlete-form" onsubmit="saveNewAthlete(event)" class="vba-form-grid">
-                <div class="form-row"><label>Nome Completo:</label><input type="text" id="add-nome" required></div>
-                <div class="form-row"><label>Apelido:</label><input type="text" id="add-apelido"></div>
+                <div class="form-row"><label>Nome Completo:</label><input type="text" id="add-nome" required autocomplete="name"></div>
+                <div class="form-row"><label>Apelido:</label><input type="text" id="add-apelido" required></div>
                 <div class="form-row">
                     <label>Ano:</label>
-                    <select id="add-ano" aria-label="Ano de nascimento"></select>
+                    <select id="add-ano" aria-label="Ano de nascimento" required></select>
                 </div>
-                <div class="form-row"><label>Data de Nascimento:</label><input type="text" id="add-nascimento" placeholder="DD/MM/AAAA"></div>
+                <div class="form-row"><label>Data de Nascimento:</label><input type="text" id="add-nascimento" placeholder="DD/MM/AAAA" required autocomplete="bday"></div>
                 <div class="form-row">
                     <label>Posição:</label>
                     <select id="add-posicao">
@@ -447,7 +445,7 @@
                     </select>
                 </div>
                 <div class="form-row"><label>Cidade:</label><input type="text" id="add-cidade"></div>
-                <div class="form-row"><label>Contato:</label><input type="text" id="add-contato"></div>
+                <div class="form-row"><label for="add-contato">Contato com DDD:</label><input type="tel" id="add-contato" inputmode="numeric" autocomplete="tel-national" placeholder="Ex.: 43999034204" aria-describedby="sa-contato-ajuda"><small id="sa-contato-ajuda" class="sa-contato-ajuda">Informe DDD + número, sem o 55. Exemplo: 43999034204.</small></div>
                 <div class="form-row"><label>RG:</label><input type="text" id="add-rg"></div>
                 <div class="form-row">
                     <label>Foto do Atleta:</label>
@@ -457,6 +455,22 @@
                     </div>
                     <small id="athlete-photo-size-note" class="athlete-photo-size-note">Fotos novas serão otimizadas para até 100 KB por imagem no JSON; fotos antigas não serão alteradas.</small>
                 </div>
+                <section id="sa-athlete-extra-fields" class="sa-athlete-extra-fields" hidden aria-label="Informações e documentos do atleta">
+                    <div class="sa-athlete-extra-heading"><strong>Informações do atleta</strong><small>As alterações serão aplicadas ao salvar.</small></div>
+                    <label class="sa-athlete-extra-label" for="sa-athlete-note">Anotações:</label>
+                    <textarea id="sa-athlete-note" rows="4" placeholder="Digite suas anotações..."></textarea>
+                    <div class="sa-athlete-documents">
+                        <label class="sa-athlete-extra-label" for="sa-athlete-doc-input">Anexar documentos:</label>
+                        <input type="file" id="sa-athlete-doc-input" multiple onchange="saAthleteSelectDocuments(this)">
+                        <small>Os documentos ficam neste navegador e entram na exportação JSON.</small>
+                        <div id="sa-athlete-doc-message" class="sa-athlete-doc-message" role="status"></div>
+                        <div id="sa-athlete-doc-list" class="sa-athlete-doc-list"></div>
+                    </div>
+                    <div class="sa-athlete-status-checks">
+                        <label><input type="checkbox" id="sa-athlete-injury"> Lesão</label>
+                        <label><input type="checkbox" id="sa-athlete-red-card"> Cartão vermelho</label>
+                    </div>
+                </section>
                 <div class="vba-modal-buttons">
                     <button type="submit" class="vba-btn-salvar">Salvar</button>
                     <button type="button" class="vba-btn-cancelar" onclick="closeAddAthleteModal()">Cancelar</button>
@@ -469,10 +483,16 @@
         <!-- Mantido como original -->
         <div class="modal-container">
             <div class="modal-header">
-                <span class="close-btn" onclick="closeModal()">&times;</span>
+                <button type="button" class="close-btn sa-ficha-close" onclick="closeModal()" aria-label="Fechar ficha">&times;</button>
                 <h2>Ficha VBolonheze Sports</h2>
+                <div class="sa-ficha-tabs" aria-label="Tipo de ficha">
+                    <button type="button" data-ficha-modo="simplificada" onclick="saFichaMudarModo('simplificada')" aria-pressed="true">Ficha simplificada</button>
+                    <button type="button" data-ficha-modo="completa" onclick="saFichaMudarModo('completa')" aria-pressed="false">Ficha completa</button>
+                </div>
+                <div id="sa-ficha-full-controls" class="sa-ficha-controls" hidden><label>Temporada <input id="sa-ficha-temporada" type="number" min="1900" max="2100" inputmode="numeric" onchange="saFichaMudarTemporada(this.value)"></label></div>
             </div>
-            <div class="modal-body" id="fichaModalBody"></div>
+            <div class="modal-body" id="fichaModalBody" tabindex="0"></div>
+            <div class="sa-ficha-actions no-print"><button type="button" id="sa-ficha-save-plan" onclick="saFichaSalvarPlano()" hidden>Salvar plano</button><button type="button" onclick="saFichaBaixarPDF()">Salvar PDF</button><button type="button" onclick="shareFichaPDF()">Exportar PDF</button><button type="button" onclick="saFichaImprimir()">Imprimir</button></div>
         </div>
     </div>
 
@@ -664,8 +684,8 @@
         </div>
     </section>
 
-    <script src="backup.js?v=sa-local-v14-browser-cache-choice-20261102"></script>
-    <script src="database-json.js?v=sa-local-v14-browser-cache-choice-20261102"></script>
-    <script src="script.js?v=sa-local-v14-browser-cache-choice-20261102"></script>
+    <script src="backup.js?v=sa-atletas-editar-whatsapp-20261107"></script>
+    <script src="database-json.js?v=sa-atletas-editar-whatsapp-20261107"></script>
+    <script src="script.js?v=sa-identidade-monitoramento-20261107"></script>
 </body>
 </html>

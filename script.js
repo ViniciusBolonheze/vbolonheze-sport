@@ -64,11 +64,21 @@ const SA_SITE_SETTINGS_KEY = 'sa_site_categories_brand_v1';
 const SA_SITE_DEFAULT_LOGO_SRC = 'sa-logo.svg';
 const SA_SITE_DEFAULT_LOGO_VERSION = 'vb-sports-shield-v1';
 const SA_SITE_DEFAULT_LOGO_VERSION_KEY = 'sa_site_default_logo_version';
-const SA_SITE_DEFAULT_CATEGORIES = [
+// Os padrões anteriores permanecem disponíveis apenas para preservar históricos
+// de bancos antigos que ainda não tinham uma configuração de categorias salva.
+const SA_SITE_LEGACY_CATEGORIES = [
     { id: 'sub11', label: 'Sub 11', anos: ['2015','2016','2017','2018'] },
     { id: 'sub12', label: 'Sub 12', anos: ['2014'] },
     { id: 'sub13', label: 'Sub 13', anos: ['2013'] },
     { id: 'sub16', label: 'Sub 16', anos: ['2009','2010','2011','2012'] }
+];
+const SA_SITE_DEFAULT_CATEGORIES = [
+    { id: 'sub7', label: 'Sub 7', anos: ['2019','2020'] },
+    { id: 'sub9', label: 'Sub 9', anos: ['2017','2018'] },
+    { id: 'sub11', label: 'Sub 11', anos: ['2015','2016'] },
+    { id: 'sub13', label: 'Sub 13', anos: ['2013','2014'] },
+    { id: 'sub15', label: 'Sub 15', anos: ['2011','2012'] },
+    { id: 'sub17', label: 'Sub 17', anos: ['2009','2010'] }
 ];
 const SA_SITE_DEFAULT_THEME = { logoData: '', primary: '#173b59', accent: '#40b8a8' }; // logoData vazio usa SA_SITE_DEFAULT_LOGO_SRC
 function saSiteCopy(value) { return JSON.parse(JSON.stringify(value)); }
@@ -92,6 +102,12 @@ function saLocalSafeImageUrl(value, fallback = '') {
     const raw = String(value ?? '').trim();
     if (!raw) return fallback;
     if (/^data:image\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(raw) || /^blob:/i.test(raw)) return raw;
+    // Fotos antigas referenciadas por caminho podem estar no próprio IndexedDB.
+    // Reutiliza o arquivo local, sem migrar nem recomprimir a imagem.
+    if (typeof window.saLocalResolveStoredImage === 'function') {
+        const local = window.saLocalResolveStoredImage(raw);
+        if (local) return local;
+    }
     const safe = saLocalSafeUrl(raw, '');
     return safe && !/^data:/i.test(safe) ? safe : fallback;
 }
@@ -211,8 +227,8 @@ function saSitePopulateAthleteYearSelect(select, selectedYear, preserveLegacyYea
     const years = saSiteAthleteFormYears();
     const requested = String(selectedYear === undefined || selectedYear === null ? select.value || '' : selectedYear).trim();
     const isLegacyYear = preserveLegacyYear && /^\d{4}$/.test(requested) && !years.includes(requested);
-    const chosen = years.includes(requested) || isLegacyYear ? requested : String(SA_SITE_ATHLETE_YEAR_MAX);
-    const options = [];
+    const chosen = years.includes(requested) || isLegacyYear ? requested : '';
+    const options = ['<option value="">Selecione o ano</option>'];
     if (isLegacyYear) options.push(`<option value="${saSiteEscape(requested)}">${saSiteEscape(requested)} (cadastro atual)</option>`);
     options.push(...years.map(year => `<option value="${saSiteEscape(year)}">${saSiteEscape(year)}</option>`));
     select.innerHTML = options.join('');
@@ -533,6 +549,10 @@ const SA_LOCAL_FILE_STORE = 'files';
 let saLocalDbPromise = null;
 let saLocalDbFailed = false;
 const saLocalFileUrls = new Map();
+window.saLocalResolveStoredImage = value => {
+    const match = String(value || '').trim().match(/^(?:\.\/)?Fotos\/(.+)$/i);
+    return match ? (saLocalFileUrls.get('fotos::' + match[1]) || '') : '';
+};
 const saLocalTableQueues = new Map();
 
 function saLocalClone(value) {
@@ -1025,14 +1045,51 @@ let gruposData = {
 };
 // Variável global para armazenar os exercícios que vêm do banco de dados
 let exerciciosSalvosLocalmente = {};
+// Fixa os padrões na primeira abertura. Em uma instalação anterior sem categorias
+// personalizadas, preserva os IDs e anos antigos para não ocultar históricos.
+// Nenhuma tabela, atleta, foto ou arquivo é alterado por esta verificação.
+async function saSitePrepareInitialCategories() {
+    if (SAStorage.getItem(SA_SITE_SETTINGS_KEY) !== null) return;
+    let hasExistingData = false;
+    try {
+        const prefs = SAStorage.exportAll();
+        hasExistingData = Object.keys(prefs).some(key => ![SA_SITE_DEFAULT_LOGO_VERSION_KEY, 'sa_mode'].includes(key));
+        const db = await saLocalOpenDb();
+        if (db && !hasExistingData) {
+            hasExistingData = await new Promise((resolve, reject) => {
+                const tx = db.transaction([SA_LOCAL_TABLE_STORE, SA_LOCAL_FILE_STORE], 'readonly');
+                const tables = tx.objectStore(SA_LOCAL_TABLE_STORE).count();
+                const files = tx.objectStore(SA_LOCAL_FILE_STORE).count();
+                tx.oncomplete = () => resolve(tables.result > 0 || files.result > 0);
+                tx.onerror = () => reject(tx.error || new Error('Falha ao verificar o banco local.'));
+                tx.onabort = () => reject(tx.error || new Error('Verificação do banco local interrompida.'));
+            });
+        } else if (!db && window.indexedDB) {
+            // Banco temporariamente inacessível: escolha conservadora, sem migrá-lo.
+            hasExistingData = true;
+        }
+    } catch (error) {
+        console.warn('Não foi possível verificar os dados antigos; categorias anteriores preservadas.', error);
+        hasExistingData = true;
+    }
+    if (hasExistingData) {
+        SA_SITE_SETTINGS.categories = saSiteNormalizeCategories(saSiteCopy(SA_SITE_LEGACY_CATEGORIES));
+        CAL_TREINO_CATS = saSiteCategoryList().map(c => ({ id:c.id, label:c.label }));
+        CONTROLE_PESO_CATEGORIAS = saSiteCategoryList().map(c => ({ id:c.id, label:c.label, anos:[...c.anos] }));
+        if (!saSiteCategoryList().some(c => c.id === relatorioVisualizacaoState.catId)) relatorioVisualizacaoState.catId = saSiteCategoryList()[0]?.id || '';
+        if (!saSiteCategoryList().some(c => c.id === relatorioPsrPseExtraModal.categoriaId)) relatorioPsrPseExtraModal.categoriaId = saSiteCategoryList()[0]?.id || '';
+    }
+    try { SAStorage.setItem(SA_SITE_SETTINGS_KEY, JSON.stringify(SA_SITE_SETTINGS)); }
+    catch (error) { console.warn('Não foi possível salvar as categorias iniciais:', error); }
+}
+
 async function loadFromStorage() {
-    // O espelhamento ZIP legado só é consultado quando a cópia é aberta no próprio computador.
-    // Em uma hospedagem web, os dados permanecem no IndexedDB/localStorage do navegador e não são enviados a uma API.
-    const localLoopback = ['localhost', '127.0.0.1', '::1'].includes(String(window.location && window.location.hostname || '').toLowerCase());
-    try { if (localLoopback && typeof window.saBackupConnect === 'function') await window.saBackupConnect(); }
-    catch (err) { console.warn('O servidor de pastas local não respondeu; o navegador continuará disponível:', err); }
+    // Banco exclusivamente no navegador; transferência/backup pelo JSON completo.
+    // Não conectar nem espelhar automaticamente no servidor ZIP legado.
+    window.SA_LOCAL_SERVER_READY = false;
     try { await _saData.ready(); }
     catch (err) { console.warn('Alguns arquivos locais não puderam ser preparados:', err); }
+    await saSitePrepareInitialCategories();
 
     try {
         const { data, error } = await _saData.from('sistema_config').select('colunas, dados').eq('chave', 'principal').single();
@@ -1045,13 +1102,6 @@ async function loadFromStorage() {
     // Migra a avaliação 2 vazia que existia como coluna padrão na versão anterior.
     // Se houver medições reais nela, preserva o histórico do usuário.
     saRemoverAvaliacao2Vazia();
-
-    if (window.SA_LOCAL_SERVER_READY && typeof window.saBackupMigrateLegacyPhotos === 'function') {
-        try { await window.saBackupMigrateLegacyPhotos(); }
-        catch (err) { console.warn('Algumas fotos antigas continuam armazenadas no navegador:', err); }
-        try { await window.saBackupSyncAll(); }
-        catch (err) { console.warn('A cópia local em arquivos não foi sincronizada integralmente:', err); }
-    }
 
     const savedConvocacao = SAStorage.getItem(STORAGE_CONVOCACAO_KEY);
     if (savedConvocacao) {
@@ -1230,6 +1280,8 @@ function ensurePrintStyles() {
                 body.printing-athlete #fichaModal { display: flex !important; }
                 .modal-container { box-shadow: none !important; border: none !important; width: 100% !important; max-width: 100% !important; margin: 0 !important; padding: 0 !important; }
                 .modal-header, .close-btn, .print-hide, button { display: none !important; }
+                #fichaModal .modal-body { overflow: visible !important; height: auto !important; max-height: none !important; }
+                #fichaModal .modal-container { overflow: visible !important; height: auto !important; max-height: none !important; }
                 #fichaExportContent { display: block !important; width: 100% !important; margin: 0 !important; padding: 0 !important; }
                 #fichaExportContent .modal-footer ~ .modal-footer { display: none !important; }
                 html, body { background: #fff !important; height: auto !important; overflow: visible !important; }
@@ -1248,19 +1300,90 @@ function onQtdGruposChange() {
 }
 
 
-function shareFichaPDF() {
-    const element = document.getElementById('fichaExportContent');
-    if (!element) return;
-    if (typeof html2pdf !== 'undefined') {
-        const opt = { margin: 10, filename: 'ficha_do_atleta.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' } };
-        html2pdf().from(element).set(opt).outputPdf('blob').then((pdfBlob) => {
-            const file = new File([pdfBlob], 'ficha_do_atleta.pdf', { type: 'application/pdf' });
-            if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                navigator.share({ files: [file], title: 'Ficha do Atleta', text: 'Segue a ficha do atleta em PDF.' }).catch(err => console.log('Erro:', err));
-            } else { html2pdf().from(element).set(opt).save(); }
-        });
-    } else { window.print(); }
+// Exportação local: o compartilhamento de arquivos depende do navegador e do sistema.
+function saNomeArquivoPDF(nome){
+ const limpo=String(nome||'Documento').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[\\/:*?"<>|\x00-\x1f]+/g,' ').replace(/\s+/g,' ').trim().replace(/[. ]+$/,'');
+ return (limpo||'Documento').slice(0,150).replace(/\.pdf$/i,'')+'.pdf';
 }
+function saPodeCompartilharPDF(janela=window){
+ try{return typeof janela.navigator.share==='function'&&typeof janela.navigator.canShare==='function'&&janela.navigator.canShare({files:[new File([''], 'documento.pdf',{type:'application/pdf'})]});}catch(_){return false;}
+}
+function saBaixarBlobPDF(blob,nome){
+ const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=saNomeArquivoPDF(nome);document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+}
+function saPedirCompartilhamentoPDF(file,titulo,imprimir,janela=window){
+ const doc=janela.document;
+ // Alguns navegadores perdem a ativação do clique durante a geração assíncrona.
+ const antigo=doc.getElementById('sa-pdf-pronto');if(antigo)antigo.remove();
+ const box=doc.createElement('div');box.id='sa-pdf-pronto';box.setAttribute('role','dialog');box.setAttribute('aria-label','PDF pronto para exportar');
+ box.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#0009;display:flex;align-items:center;justify-content:center;padding:16px';
+ const panel=doc.createElement('div');panel.style.cssText='background:white;color:#173b59;padding:20px;border-radius:12px;max-width:420px;width:100%;font:16px Arial,sans-serif;box-shadow:0 10px 35px #0005';
+ const label=doc.createElement('p');label.textContent='PDF pronto. Toque em Abrir compartilhamento para escolher para onde enviar.';
+ const row=doc.createElement('div');row.style.cssText='display:flex;gap:8px;flex-wrap:wrap';
+ function botao(texto){const b=doc.createElement('button');b.type='button';b.textContent=texto;b.style.cssText='padding:10px 12px;border:0;border-radius:6px;background:#173b59;color:white;font-weight:bold;cursor:pointer';row.appendChild(b);return b;}
+ const enviar=botao('Abrir compartilhamento'),print=botao('Imprimir'),fechar=botao('Cancelar');
+ enviar.onclick=async()=>{try{await janela.navigator.share({files:[file],title:titulo});box.remove();}catch(e){if(e?.name==='AbortError'){box.remove();return;} if(e?.name==='NotAllowedError'||e?.name==='InvalidStateError'){label.textContent='Não foi possível abrir o compartilhamento. Tente novamente ou use Imprimir.';return;}box.remove();imprimir();}};
+ print.onclick=()=>{box.remove();imprimir();};fechar.onclick=()=>box.remove();panel.append(label,row);box.appendChild(panel);doc.body.appendChild(box);enviar.focus();
+}
+async function saEntregarPDF(blob,nome,titulo,imprimir,janela=window){
+ const file=new File([blob],saNomeArquivoPDF(nome),{type:'application/pdf'});
+ if(!saPodeCompartilharPDF(janela)||!janela.navigator.canShare({files:[file]})){imprimir();return;}
+ try{await janela.navigator.share({files:[file],title:titulo||'PDF'});}catch(e){
+  if(e?.name==='AbortError')return;
+  if(e?.name==='NotAllowedError'||e?.name==='InvalidStateError'){saPedirCompartilhamentoPDF(file,titulo||'PDF',imprimir,janela);return;}
+  console.warn('Compartilhamento de PDF indisponível:',e);imprimir();
+ }
+}
+// Gera o PDF a partir do documento de impressão original, mantendo seus estilos.
+function saAtivarExportacaoJanela(w){
+ if(!w||!saPodeCompartilharPDF())return w;
+ const imprimir=w.print.bind(w);let executando=false;
+ w.print=async function(){
+  if(executando)return;executando=true;
+  try{
+   const d=w.document;
+   await new Promise((resolve,reject)=>{const script=d.createElement('script');script.src=new URL('vendor/html2pdf.bundle.min.js',document.baseURI).href;script.onload=resolve;script.onerror=reject;d.head.appendChild(script);});
+   if(typeof w.html2pdf!=='function')throw new Error('Gerador local não encontrado');
+   const css=[...d.querySelectorAll('style')].map(e=>e.textContent).join(' ');
+   const landscape=/@page\s*\{[^}]*landscape/i.test(css);
+   const nome=saNomeArquivoPDF(d.title||'Relatório');
+   const blob=await w.html2pdf().set({margin:8,filename:nome,image:{type:'jpeg',quality:.96},html2canvas:{scale:2,useCORS:true,backgroundColor:'#ffffff',onclone:doc=>{doc.querySelectorAll('svg[viewBox]').forEach(svg=>{const vb=svg.viewBox?.baseVal;if(vb?.width&&vb?.height){if(!svg.hasAttribute('width'))svg.setAttribute('width',vb.width);if(!svg.hasAttribute('height'))svg.setAttribute('height',vb.height);}});}},jsPDF:{unit:'mm',format:'a4',orientation:landscape?'landscape':'portrait'},pagebreak:{mode:['css','legacy'],avoid:['tr']}}).from(d.body).outputPdf('blob');
+   await saEntregarPDF(blob,nome,d.title||'Relatório',imprimir,w.frameElement?window:w);
+  }catch(e){console.warn('Não foi possível gerar o PDF; abrindo impressão.',e);imprimir();}
+  finally{executando=false;}
+ };
+ return w;
+}
+async function saFichaGerarPDF(compartilhar=false){
+ const element=document.getElementById('fichaExportContent');if(!element)return alert('Aguarde o carregamento da ficha.');
+ if(compartilhar&&!saPodeCompartilharPDF()){saFichaImprimir();return;}
+ if(typeof html2pdf==='undefined'){if(compartilhar)saFichaImprimir();else alert('A biblioteca de PDF local não está disponível. Use Imprimir e escolha Salvar como PDF.');return;}
+ const buttons=[...document.querySelectorAll('#fichaModal .sa-ficha-actions button')];buttons.forEach(b=>b.disabled=true);
+ try{
+  const copy=element.cloneNode(true);copy.classList.add('fc-pdf-export');
+  for(const id of ['fc-comentario','fc-foco']){const original=element.querySelector('#'+id),t=copy.querySelector('#'+id);if(t){const d=document.createElement('div');d.className='fc-plan-copy';d.textContent=original?.value||'—';t.replaceWith(d);}}
+  // Textos extensos são divididos em blocos no PDF, evitando cortar linhas nas páginas.
+  const planos=[...copy.querySelectorAll('.fc-plan-copy')];
+  if(planos.some(x=>x.textContent.length>1500||(x.textContent.match(/\n/g)||[]).length>20)){
+   const plano=copy.querySelector('.fc-plan');if(plano){plano.classList.add('fc-plan-long');plano.closest('.fc-section')?.classList.add('fc-plan-large-section');}
+   planos.forEach(box=>{const texto=box.textContent;box.textContent='';let pos=0;while(pos<texto.length){let fim=Math.min(pos+350,texto.length);if(fim<texto.length){const corte=texto.lastIndexOf(' ',fim);if(corte>pos+180)fim=corte+1;}const trecho=document.createElement('div');trecho.className='fc-plan-chunk';trecho.textContent=texto.slice(pos,fim);box.appendChild(trecho);pos=fim;}});
+  }
+  const opt={margin:[8,7,8,7],filename:'ficha_do_atleta.pdf',image:{type:'jpeg',quality:.96},html2canvas:{scale:2,useCORS:true,onclone:doc=>{
+   doc.querySelectorAll('#fc-comentario,#fc-foco').forEach(t=>{const d=doc.createElement('div');d.className='fc-plan-copy';d.textContent=t.value||'—';t.replaceWith(d);});
+  }},jsPDF:{unit:'mm',format:'a4',orientation:'portrait'},pagebreak:{mode:['css','legacy'],avoid:['.fc-section:not(.fc-plan-large-section)','.fc-plan-chunk','.fc-athlete','tr']}};
+  const blob=await html2pdf().set(opt).from(copy).outputPdf('blob');
+  const nome=identidadeAtleta(saFichaState.index).nome||'Ficha do Atleta';
+  if(compartilhar){await saEntregarPDF(blob,nome,'Ficha do Atleta',saFichaImprimir);return;}
+  saBaixarBlobPDF(blob,nome);
+ }catch(e){if(e?.name!=='AbortError'){console.error('Erro ao gerar PDF da ficha:',e);if(compartilhar)saFichaImprimir();else alert('Não foi possível gerar o PDF. Tente Imprimir e escolha Salvar como PDF.');}}
+ finally{buttons.forEach(b=>b.disabled=false);}
+}
+function saFichaBaixarPDF(){return saFichaGerarPDF(false);}
+function saFichaImprimir(){
+ document.querySelectorAll('#fc-comentario,#fc-foco').forEach(t=>{const copy=t.parentElement.querySelector('.fc-plan-print');if(copy)copy.textContent=t.value||'—';});
+ document.body.classList.add('printing-athlete');const limpar=()=>{document.body.classList.remove('printing-athlete');window.removeEventListener('afterprint',limpar);};window.addEventListener('afterprint',limpar);window.print();setTimeout(limpar,1500);
+}
+function shareFichaPDF(){return saFichaGerarPDF(true);}
 function printFicha() {
     document.body.classList.add('printing-athlete');
     const cleanup = () => {
@@ -1417,8 +1540,8 @@ function renderExcelTable() {
 
 function addRowToExcel() {
     if (!saCanAddAthlete()) return;
-    let newRow = {}; excelColumns.forEach(col => { newRow[col] = ''; });
-    excelData.push(newRow); saveToStorage(); renderExcelTable(); saUpdateTrialCounter();
+    // Uma nova linha representa um atleta: use o mesmo cadastro obrigatório.
+    openAddAthleteModal();
 }
 
 function exportarBancoDadosXLSX() {
@@ -1482,6 +1605,12 @@ function importExcelFile(event) {
 
 /* === FUNÇÕES GENÉRICAS E TELA DE ATLETAS MANTIDAS DO ORIGINAL === */
 function openFichaAtleta(globalIndex) {
+ if(globalIndex===null||globalIndex===undefined||!excelData[globalIndex]){alert('Selecione um atleta na lista primeiro.');return;}
+ saFichaState={index:globalIndex,rowRef:excelData[globalIndex],modo:'simplificada',temporada:new Date().getFullYear(),request:0,dados:null,plano:null,rascunho:null};
+ document.getElementById('sa-ficha-temporada').value=String(saFichaState.temporada);
+ saFichaAtualizarAbas();saFichaRenderSimplificada(globalIndex);
+}
+function saFichaRenderSimplificada(globalIndex) {
     if (globalIndex === null || globalIndex === undefined || !excelData[globalIndex]) {
         alert('Selecione um atleta na lista primeiro.'); return;
     }
@@ -1523,7 +1652,7 @@ function openFichaAtleta(globalIndex) {
     const nome = getVal(['NOME COMPLETO', 'nome']) !== '-' ? getVal(['NOME COMPLETO', 'nome']) : (getVal(['APELIDO']) !== '-' ? getVal(['APELIDO']) : 'Sem Nome');
     const posicao = getVal(['Posição 1', 'posicao1', 'posição']);
     const nascimento = convertExcelDate(getVal(['Data de nascimento', 'nascimento']));
-    const cidade = getVal(['CIDADE', 'cidade']);
+    const cidade = valorExatoAtletaCadastro(row,'CIDADE') || '—';
     const foto = getVal(['Foto', 'foto']);
     const fotoLocal = saLocalSafeImageUrl((foto && foto !== '-') ? foto : '', fotosPlaceholderMiniatura());
     const altura = getEvalVal(['Altura', 'altura']);
@@ -1543,32 +1672,28 @@ function openFichaAtleta(globalIndex) {
             <div class="player-profile">
                 <img src="${saSiteEscape(fotoLocal)}" class="player-photo" alt="Foto do atleta">
                 <div class="player-details">
-                    <h3>${nome}</h3><p><strong>Posição:</strong> ${posicao}</p><p><strong>Nascimento:</strong> ${nascimento}</p><p><strong>Cidade:</strong> ${cidade !== '-' ? cidade : 'Apucarana'}</p>
+                    <h3>${saFichaEsc(nome)}</h3><p><strong>Posição:</strong> ${saFichaEsc(posicao)}</p><p><strong>Nascimento:</strong> ${saFichaEsc(nascimento)}</p><p><strong>Cidade:</strong> ${saFichaEsc(cidade !== '-' ? cidade : '—')}</p>
                 </div>
             </div>
             <div class="metrics-section">
-                <h4>MEDIDAS ANTROPOMÉTRICAS ${dataAvaliacao !== '-' ? '(Avaliação ' + evalNum + ': ' + dataAvaliacao + ')' : ''}</h4>
+                <h4>MEDIDAS ANTROPOMÉTRICAS ${dataAvaliacao !== '-' ? '(Avaliação ' + evalNum + ': ' + saFichaEsc(dataAvaliacao) + ')' : ''}</h4>
                 <div class="metrics-grid">
-                    <div class="metric-item"><strong>Altura:</strong> ${altura !== '-' ? altura + ' m' : '-'}</div>
-                    <div class="metric-item"><strong>Subescapular:</strong> ${subescapular !== '-' ? subescapular + ' cm' : '-'}</div>
-                    <div class="metric-item"><strong>Massa Corporal:</strong> ${peso !== '-' ? peso + ' Kg' : '-'}</div>
-                    <div class="metric-item"><strong>Triciptal:</strong> ${triciptal !== '-' ? triciptal + ' cm' : '-'}</div>
-                    <div class="metric-item"><strong>Supra Ilíaca:</strong> ${supraIliaca !== '-' ? supraIliaca + ' cm' : '-'}</div>
-                    <div class="metric-item"><strong>Abdominal:</strong> ${abdominal !== '-' ? abdominal + ' cm' : '-'}</div>
-                    <div class="metric-item"><strong>% Gordura:</strong> ${gordura}</div>
+                    <div class="metric-item"><strong>Altura:</strong> ${altura !== '-' ? saFichaEsc(altura) + ' m' : '-'}</div>
+                    <div class="metric-item"><strong>Subescapular:</strong> ${subescapular !== '-' ? saFichaEsc(subescapular) + ' cm' : '-'}</div>
+                    <div class="metric-item"><strong>Massa Corporal:</strong> ${peso !== '-' ? saFichaEsc(peso) + ' Kg' : '-'}</div>
+                    <div class="metric-item"><strong>Triciptal:</strong> ${triciptal !== '-' ? saFichaEsc(triciptal) + ' cm' : '-'}</div>
+                    <div class="metric-item"><strong>Supra Ilíaca:</strong> ${supraIliaca !== '-' ? saFichaEsc(supraIliaca) + ' cm' : '-'}</div>
+                    <div class="metric-item"><strong>Abdominal:</strong> ${abdominal !== '-' ? saFichaEsc(abdominal) + ' cm' : '-'}</div>
+                    <div class="metric-item"><strong>% Gordura:</strong> ${saFichaEsc(gordura)}</div>
                 </div>
-                ${alturapredita !== '-' ? `<div class="predicted-height">Altura Predita: ${alturapredita} m</div>` : ''}
+                ${alturapredita !== '-' ? `<div class="predicted-height">Altura Predita: ${saFichaEsc(alturapredita)} m</div>` : ''}
             </div>
-            <div class="modal-footer" style="margin-top: 15px;"><p>VBolonheze Sports — dados armazenados somente neste dispositivo.</p></div>
-        </div>
-        <div style="display: flex; gap: 10px; margin-top: 20px;" class="no-print">
-            <button onclick="shareFichaPDF()" style="flex: 1; padding: 12px; background: #0984e3; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Compartilhar PDF</button>
-            <button onclick="printFicha()" style="flex: 1; padding: 12px; background: #6c5ce7; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Imprimir</button>
+
         </div>
     `;
     document.getElementById('fichaModal').style.display = 'flex';
 }
-function closeModal() { document.getElementById('fichaModal').style.display = 'none'; }
+function closeModal() { saFichaCapturarRascunho();const d=saFichaState.rascunho,p=saFichaState.plano;if(d&&(d.comentario!==String(p?.comentario||'')||d.foco!==String(p?.foco||''))&&!confirm('O plano individual tem alterações não salvas. Fechar e descartá-las?'))return;saFichaState.request++;document.getElementById('fichaModal').style.display = 'none'; }
 window.onclick = function(event) { if (event.target === document.getElementById('fichaModal')) closeModal(); }
 
 function renderAtletasScreen() {
@@ -1716,6 +1841,22 @@ function htmlAnotacaoAtletaCadastro(texto){
     const seguro = atletasTooltipEscape(texto).replace(/\n/g,'<br>');
     return `<div class="atleta-hover-tooltip-anotacao"><span>Anotações:</span> ${seguro}</div>`;
 }
+// Formato de contato brasileiro: DDD + 8 ou 9 dígitos; o 55 é incluído somente no link.
+function saContatoSomenteDigitos(value){ return String(value ?? '').replace(/\D/g,''); }
+function saContatoValidoDDD(value){ return /^[1-9]\d{9,10}$/.test(value); }
+function saContatoWhatsApp(value){
+    let digits=saContatoSomenteDigitos(value);
+    // Compatibilidade de leitura para cadastros antigos que já tinham o prefixo 55.
+    if ((digits.length===12 || digits.length===13) && digits.startsWith('55')) digits=digits.slice(2);
+    return saContatoValidoDDD(digits) ? digits : '';
+}
+function saWhatsAppAtletaHTML(row){
+    const contato=saContatoWhatsApp(valorCampoAtleta(row,['Contato','contato']));
+    const svg='<svg viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path fill="currentColor" d="M16 3C9.1 3 3.5 8.6 3.5 15.5c0 2.3.6 4.5 1.8 6.5L3.4 29l7.2-1.9c1.7.9 3.5 1.3 5.4 1.3 6.9 0 12.5-5.6 12.5-12.5S22.9 3 16 3zm0 22.8c-1.7 0-3.3-.5-4.8-1.3l-.3-.2-4.3 1.1 1.1-4.2-.2-.3a10.1 10.1 0 0 1-1.5-5.4C6 10 10.5 5.5 16 5.5S26 10 26 15.5 21.5 25.8 16 25.8zm5.5-7.5c-.3-.1-1.8-.9-2.1-1-.3-.1-.5-.1-.7.2-.2.3-.8 1-1 1.2-.2.2-.4.2-.7.1-.3-.2-1.3-.5-2.5-1.6-.9-.8-1.5-1.9-1.7-2.2-.2-.3 0-.5.1-.6l.5-.6c.2-.2.2-.4.3-.5.1-.2 0-.4-.1-.5l-1-2.4c-.2-.6-.5-.5-.7-.5h-.6c-.2 0-.5.1-.8.4-.3.3-1 1-1 2.3 0 1.4 1 2.6 1.1 2.8.1.2 1.9 2.9 4.5 4 2.6 1.1 2.6.7 3.1.7.5-.1 1.7-.7 1.9-1.4.2-.7.2-1.3.1-1.4-.1-.1-.3-.2-.6-.3z"/></svg>';
+    return contato
+        ? `<a class="sa-atleta-whatsapp" href="https://wa.me/55${contato}" target="_blank" rel="noopener noreferrer" aria-label="Abrir conversa no WhatsApp" title="Abrir conversa no WhatsApp">${svg}</a>`
+        : `<span class="sa-atleta-whatsapp sa-atleta-whatsapp-disabled" role="img" aria-label="WhatsApp indisponível: contato com DDD não informado" title="Cadastre um contato com DDD para usar o WhatsApp">${svg}</span>`;
+}
 function htmlTooltipAtletaCadastro(globalIndex){
     const row=excelData[globalIndex]||{};
     const nome=valorExatoAtletaCadastro(row,'NOME COMPLETO')||valorFlexAtletaCadastro(row,['nome completo'])||valorFlexAtletaCadastro(row,['nome'])||'Sem nome';
@@ -1726,7 +1867,7 @@ function htmlTooltipAtletaCadastro(globalIndex){
     const av=ultimaAvaliacaoAtletaCadastro(row);
     const anotacaoTexto=textoAnotacaoAtletaCadastro(row);
     const status=statusIconsAtletaCadastro(row, anotacaoTexto);
-    return `<div class="atleta-hover-tooltip-head"><img src="${atletasTooltipEscape(foto)}" onerror="this.src='sa-logo.svg'" alt="${atletasTooltipEscape(apelido)}"><div><div class="atleta-hover-tooltip-title">${atletasTooltipEscape(apelido)}${status}</div><div class="atleta-hover-tooltip-name">${atletasTooltipEscape(nome)}</div></div></div>
+    return `<div class="atleta-hover-tooltip-head"><img src="${atletasTooltipEscape(foto)}" onerror="this.src='sa-logo.svg'" alt="${atletasTooltipEscape(apelido)}"><div><div class="atleta-hover-tooltip-title">${atletasTooltipEscape(apelido)}${status}</div><div class="atleta-hover-tooltip-name">${atletasTooltipEscape(nome)}</div></div>${saWhatsAppAtletaHTML(row)}</div>
         <div class="atleta-hover-tooltip-grid">
             <span>Nascimento</span><b>${atletasTooltipEscape(nascimento)}</b>
             <span>Peso</span><b>${atletasTooltipEscape(av.peso)}${av.peso!=='-'?' kg':''}</b>
@@ -1808,6 +1949,11 @@ function cliqueMantemSelecaoAtleta(alvo){
 }
 function limparSelecaoAtletaAoClicarFora(event){
     const alvo=event.target;
+    // Um botão pode ser removido ao redesenhar a lista de anexos antes do evento
+    // chegar ao document; o caminho original ainda identifica o modal de edição.
+    if(typeof event.composedPath==='function' && event.composedPath().includes(document.getElementById('add-athlete-modal'))) return;
+    // O cartão é interativo: não o feche ao clicar no WhatsApp.
+    if(alvo.closest && alvo.closest('#atleta-hover-tooltip')) return;
     // Se clicou em outro atleta, o próprio clique do atleta atualiza seleção e card.
     if(alvo.closest && alvo.closest('.athlete-item')) return;
 
@@ -1992,16 +2138,124 @@ function posicaoEdicaoAtleta(row){
     if (posicaoSecundaria && OPCOES_POSICAO_ATLETA_COMPLETAS.includes(posicaoSecundaria)) return posicaoSecundaria;
     return 'Meia';
 }
+const SA_ATHLETE_DOCUMENT_MARKER = '--- [DOCUMENTOS ANEXADOS] ---';
+let saAthleteExtras = null;
+let saAthleteSaveBusy = false;
+let saAthleteDisabledBeforeSave = [];
+let saAthleteOriginalContact = '';
+
+function saAthleteSaveSetBusy(busy){
+    saAthleteSaveBusy=busy;
+    const form=document.getElementById('athlete-form');
+    if(!form)return;
+    if(busy){
+        saAthleteDisabledBeforeSave=Array.from(form.querySelectorAll('input,textarea,select,button')).map(el=>[el,el.disabled]);
+        saAthleteDisabledBeforeSave.forEach(([el])=>{el.disabled=true;});
+    }else{
+        saAthleteDisabledBeforeSave.forEach(([el,disabled])=>{el.disabled=disabled;});
+        saAthleteDisabledBeforeSave=[];
+    }
+}
+function saAthleteKeyNormal(key){return String(key||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[\s_]+/g,'');}
+function saAthleteSetField(row, canonical, value){
+    const key=saAthleteKeyNormal(canonical);
+    Object.keys(row).filter(k=>saAthleteKeyNormal(k)===key).forEach(k=>{row[k]=value;});
+    row[canonical]=value;
+    garantirColunaAtleta(canonical);
+}
+function saAthleteReadNote(row){
+    if(!row)return '';
+    const direct=row['Anotacoes'];
+    if(direct!==undefined && direct!==null && String(direct)!=='')return String(direct);
+    return String(valorFlexAtletaCadastro(row,['anotacoes','anotações']) || '');
+}
+function saAthleteExtrasOpen(row){
+    const section=document.getElementById('sa-athlete-extra-fields');
+    if(!row){saAthleteExtras=null;section.hidden=true;return;}
+    const raw=saAthleteReadNote(row),at=raw.indexOf(SA_ATHLETE_DOCUMENT_MARKER);
+    const note=(at<0?raw:raw.slice(0,at)).trim();
+    let parsed=[],malformed=false;
+    if(at>=0){try{parsed=JSON.parse(raw.slice(at+SA_ATHLETE_DOCUMENT_MARKER.length).trim());if(!Array.isArray(parsed))throw new Error('Lista inválida');}catch(_){malformed=true;parsed=[];}}
+    saAthleteExtras={originalRaw:raw,originalNote:note,malformed,rawTail:at>=0?raw.slice(at):'',items:parsed.map(doc=>({doc:saLocalClone(doc)})),originals:parsed.map(doc=>saLocalClone(doc)),docsChanged:false};
+    document.getElementById('sa-athlete-note').value=note;
+    document.getElementById('sa-athlete-injury').checked=atletaCadastroTemLesao(row);
+    document.getElementById('sa-athlete-red-card').checked=atletaCadastroTemCartaoVermelho(row);
+    const input=document.getElementById('sa-athlete-doc-input');input.value='';input.disabled=malformed;
+    document.getElementById('sa-athlete-doc-message').textContent=malformed?'Lista antiga de anexos em formato não reconhecido; ela será preservada. Os anexos não podem ser alterados nesta edição.':'';
+    section.hidden=false;saAthleteRenderDocuments();
+}
+function saAthleteSelectDocuments(input){
+    if(!saAthleteExtras || saAthleteExtras.malformed || saAthleteSaveBusy)return;
+    for(const file of Array.from(input.files||[]))saAthleteExtras.items.push({file,nome:file.name});
+    saAthleteExtras.docsChanged=true;input.value='';saAthleteRenderDocuments();
+}
+function saAthleteDocumentPath(doc){
+    if(!doc || typeof doc!=='object')return '';
+    if(typeof doc.path==='string' && doc.path)return doc.path;
+    if(typeof doc.url==='string'){
+        try{const url=new URL(doc.url,location.href),parts=url.pathname.split('/documentos-atletas/');if(parts.length>1)return decodeURIComponent(parts[1]);}catch(_){}
+    }
+    return '';
+}
+function saAthleteRenderDocuments(){
+    const box=document.getElementById('sa-athlete-doc-list');if(!box)return;box.replaceChildren();
+    if(!saAthleteExtras || !saAthleteExtras.items.length){const empty=document.createElement('small');empty.textContent=saAthleteExtras?.malformed?'Anexos antigos preservados sem alterações.':'Nenhum documento anexado.';box.appendChild(empty);return;}
+    saAthleteExtras.items.forEach((item,index)=>{
+        const wrap=document.createElement('div');wrap.className='sa-athlete-doc-item';
+        const name=String(item.file?item.nome:(item.doc?.nome||'Documento'));
+        const path=item.file?'':saAthleteDocumentPath(item.doc);
+        const local=path?_saData.storage.from('documentos-atletas').getPublicUrl(path)?.data?.publicUrl:'';
+        const url=saLocalSafeUrl(local||(!item.file?item.doc?.url:''),'');
+        const label=document.createElement(url?'a':'span');label.textContent='📎 '+name+(item.file?' (será anexado ao salvar)':(!url?' (arquivo local indisponível)':''));label.title=name;
+        if(url){label.href=url;label.target='_blank';label.rel='noopener noreferrer';}
+        const remove=document.createElement('button');remove.type='button';remove.textContent='Remover';remove.setAttribute('aria-label','Remover '+name);
+        remove.onclick=()=>{if(saAthleteSaveBusy)return;if(!confirm('Remover este documento? A alteração será concluída ao salvar o atleta.'))return;saAthleteExtras.items.splice(index,1);saAthleteExtras.docsChanged=true;saAthleteRenderDocuments();};
+        wrap.append(label,remove);box.appendChild(wrap);
+    });
+}
+async function saAthleteUploadDocuments(uploadedPaths){
+    const result=[];
+    for(const item of saAthleteExtras.items){
+        if(!item.file){result.push(saLocalClone(item.doc));continue;}
+        const file=item.file;
+        const safe=String(file.name||'arquivo').normalize('NFC').replace(/[\\/<>:"|?*\u0000-\u001f]/g,'_').replace(/\s+/g,'_').replace(/[. ]+$/g,'').slice(0,140)||'arquivo';
+        const random=window.crypto&&typeof window.crypto.randomUUID==='function'?window.crypto.randomUUID():Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,12);
+        const path=Date.now()+'_'+random+'_'+safe;
+        const {error}=await _saData.storage.from('documentos-atletas').upload(path,file,{contentType:file.type||'application/octet-stream'});
+        if(error)throw new Error('Não foi possível anexar '+file.name+': '+(error.message||'erro local.'));
+        uploadedPaths.push(path);result.push({nome:file.name,path,url:''});
+    }
+    return result;
+}
+function saAthleteBuildNote(savedDocs){
+    const state=saAthleteExtras, text=document.getElementById('sa-athlete-note').value.trim();
+    if(text===state.originalNote && !state.docsChanged)return state.originalRaw;
+    if(state.malformed)return text+(text?'\n\n':'')+state.rawTail;
+    return text+(savedDocs.length?(text?'\n\n':'')+SA_ATHLETE_DOCUMENT_MARKER+'\n'+JSON.stringify(savedDocs):'');
+}
+async function saAthleteRemoveUnreferencedDocuments(paths){
+    for(const path of new Set(paths.filter(Boolean))){
+        // Conservador: não apague o arquivo se algum atleta ainda citar o caminho.
+        const referenced=(excelData||[]).some(row=>Object.keys(row||{}).filter(k=>saAthleteKeyNormal(k)==='anotacoes').some(k=>String(row[k]||'').includes(path)));
+        if(referenced)continue;
+        const {error}=await _saData.storage.from('documentos-atletas').remove([path]);
+        if(error)throw new Error(error.message||'Não foi possível remover o arquivo local.');
+    }
+}
+
 function openAddAthleteModal() {
     saAthletePhotoCompressionRequestId++;
     saAthletePhotoCompressionInProgress = false;
     saSetAthletePhotoCompressionBusy(false);
     editingAthleteIndex = null;
     uploadedPhotoBase64 = '';
+    saAthleteOriginalContact = '';
+    saAthleteExtrasOpen(null);
+    document.getElementById('add-contato').required=true;
     const form = document.getElementById('athlete-form');
     if (form) form.reset();
     const yearSelect = document.getElementById('add-ano');
-    saSitePopulateAthleteYearSelect(yearSelect, String(SA_SITE_ATHLETE_YEAR_MAX), false);
+    saSitePopulateAthleteYearSelect(yearSelect, '', false);
     garantirOpcoesPosicaoAtletaModal();
     const fileLabel = document.getElementById('file-label-text');
     if (fileLabel) fileLabel.textContent = 'Selecionar Foto';
@@ -2030,7 +2284,10 @@ function openEditAthleteModal() {
     document.getElementById('add-nascimento').value = convertExcelDate(valorCampoAtleta(row, ['Data de nascimento', 'nascimento']));
     document.getElementById('add-posicao').value = posicaoEdicaoAtleta(row);
     document.getElementById('add-cidade').value = valorCampoAtleta(row, ['CIDADE', 'cidade']);
-    document.getElementById('add-contato').value = valorCampoAtleta(row, ['Contato', 'contato']);
+    saAthleteOriginalContact = String(valorCampoAtleta(row, ['Contato', 'contato']) || '');
+    document.getElementById('add-contato').value = saAthleteOriginalContact;
+    document.getElementById('add-contato').required=false;
+    saAthleteExtrasOpen(row);
     document.getElementById('add-rg').value = valorCampoAtleta(row, ['RG', 'rg']);
     uploadedPhotoBase64 = valorCampoAtleta(row, ['Foto', 'foto', 'imagem']);
     const fileLabel = document.getElementById('file-label-text');
@@ -2043,10 +2300,12 @@ function openEditAthleteModal() {
     document.getElementById('add-athlete-modal').style.display = 'flex';
 }
 function closeAddAthleteModal() {
+    if(saAthleteSaveBusy)return;
     saAthletePhotoCompressionRequestId++;
     saAthletePhotoCompressionInProgress = false;
     saSetAthletePhotoCompressionBusy(false);
     document.getElementById('add-athlete-modal').style.display = 'none';
+    saAthleteExtrasOpen(null);
     editingAthleteIndex = null;
     uploadedPhotoBase64 = '';
     const photoNote = document.getElementById('athlete-photo-size-note');
@@ -2215,58 +2474,180 @@ async function previewAthletePhoto(input) {
         }
     }
 }
+// Atualização de identidade preserva documentos e somente muda registros cuja
+// identidade completa coincida; não associa por apelido ou somente por ano.
+const SA_IDENT_TABELAS=new Set(['respostas_diarias','avaliacao_diaria_notas','atletas_extras_anos','goleiros_informacoes_tecnicas','goleiros_informacoes_jogos','controle_peso','preparacao_fisica_registros','documentos_acessos_locais','jogos','convocacoes','calendario_jogo_convocados','trabalhos_diarios','planejamentos_semanais','configuracoes_categorias']);
+function saIdentDeRow(row){return aeIdRow(row||{});}
+function saIdentCampoChave(valor,antigo,novo){
+ const texto=String(valor||''),pos=texto.lastIndexOf('||');if(pos<1)return null;
+ const nome=texto.slice(0,pos),nasc=texto.slice(pos+2);
+ if(saIdentChave({nomeCompleto:nome,nascimento:nasc})!==saIdentChave(antigo))return null;
+ const min=nome===nome.toLocaleLowerCase('pt-BR'),iso=/^\d{4}-\d{2}-\d{2}$/.test(nasc);
+ return (min?saIdentNome(novo.nomeCompleto):novo.nomeCompleto)+'||'+(iso?saIdentData(novo.nascimento):novo.nascimento);
+}
+function saIdentAplicarObjeto(value,antigo,novo,tabela){
+ if(!value||typeof value!=='object')return false;
+ if(Array.isArray(value)){let alterado=false;value.forEach(x=>{if(saIdentAplicarObjeto(x,antigo,novo,tabela))alterado=true;});return alterado;}
+ let changed=false;const chave=saIdentChave(value),original=saIdentChave(antigo);
+ const cheio=String(value.nomeCompleto||value.nome_completo||'').trim(),nasc=value.nascimento||value.data_nascimento||'';
+ // Dados incompletos não são atribuídos a alguém apenas pelo nome.
+ if(cheio&&saIdentNome(cheio)===saIdentNome(antigo.nomeCompleto)&&!saIdentData(nasc))throw new Error('Há registros com o mesmo nome e nascimento ausente ou inválido. Corrija-os ou revise o backup antes de alterar a identidade; nenhum dado foi mudado.');
+ if(chave&&chave===original){
+  for(const k of ['nomeCompleto','nome_completo'])if(Object.prototype.hasOwnProperty.call(value,k)){value[k]=novo.nomeCompleto;changed=true;}
+  if(!value.nomeCompleto&&!value.nome_completo&&Object.prototype.hasOwnProperty.call(value,'nome')){value.nome=novo.nomeCompleto;changed=true;}
+  for(const k of ['nascimento','data_nascimento'])if(Object.prototype.hasOwnProperty.call(value,k)){value[k]=novo.nascimento;changed=true;}
+  if(Object.prototype.hasOwnProperty.call(value,'apelido')&&saIdentNome(value.apelido)===saIdentNome(antigo.apelido))value.apelido=novo.apelido;
+  if(Object.prototype.hasOwnProperty.call(value,'ano')&&String(value.ano)===String(antigo.ano))value.ano=String(novo.ano);
+  if(Object.prototype.hasOwnProperty.call(value,'atleta_key')){
+   value.atleta_key=tabela==='atletas_extras_anos'?AE.key(novo):tabela==='avaliacao_diaria_notas'?trabalhoChaveAtleta(novo):saPortalAtletaKey(novo);
+  }
+ }
+ for(const k of Object.keys(value)){
+  const v=value[k];
+  // Chaves de escalação são nome completo + nascimento; o valor é preservado.
+  if(k==='escalacao'&&v&&typeof v==='object'&&!Array.isArray(v)){
+   for(const key of Object.keys(v)){const dest=saIdentCampoChave(key,antigo,novo);if(dest&&dest!==key){if(Object.prototype.hasOwnProperty.call(v,dest))throw new Error('A convocação contém uma identidade de destino duplicada. Nenhum dado foi alterado.');v[dest]=v[key];delete v[key];changed=true;}}
+  }
+  if(k==='atleta_key'&&typeof v==='string'&&chave!==original){const novoKey=saIdentCampoChave(v,antigo,novo);if(novoKey&&novoKey!==v){value[k]=novoKey;changed=true;}}
+  if(v&&typeof v==='object'&&saIdentAplicarObjeto(v,antigo,novo,tabela))changed=true;
+ }
+ return changed;
+}
+function saIdentTem(value,chave){
+ if(!value||typeof value!=='object')return false;
+ if(Array.isArray(value))return value.some(x=>saIdentTem(x,chave));
+ if(saIdentChave(value)===chave)return true;
+ const raw=String(value.atleta_key||''),pos=raw.lastIndexOf('||');if(pos>0&&saIdentChave({nomeCompleto:raw.slice(0,pos),nascimento:raw.slice(pos+2)})===chave)return true;
+ return Object.values(value).some(v=>v&&typeof v==='object'&&saIdentTem(v,chave));
+}
+async function saMigrarIdentidadeAtleta(index,originalRow,newRow){
+ const antigo=saIdentDeRow(originalRow),novo=saIdentDeRow(newRow),orig=saIdentChave(antigo),dest=saIdentChave(novo);
+ if(!dest)throw new Error('Para atualizar o cadastro com segurança, informe nome completo e nascimento válidos.');
+ if(!orig&&!confirm('O cadastro anterior não possui nome completo e nascimento válidos. Registros antigos sem identidade completa não serão vinculados automaticamente. Deseja continuar?'))throw new Error('Edição cancelada. Nenhum dado foi alterado.');
+ const outros=excelData.filter((r,i)=>i!==index&&[orig,dest].includes(saIdentChave(saIdentDeRow(r))));
+ if(outros.length)throw new Error('Há outro cadastro com a mesma identidade antiga ou nova. Resolva a duplicidade antes de salvar.');
+ await saveQueue.catch(()=>false);await Promise.all([...saLocalTableQueues.values()].map(x=>x.catch(()=>{})));
+ const db=await saLocalOpenDb();if(!db)throw new Error('A atualização vinculada exige IndexedDB disponível. Nenhum dado foi alterado.');
+ const armazenamento=SAStorage.exportAll(),prefs=[];
+ for(const [k,v] of Object.entries(armazenamento)){
+  if(!k.startsWith('sa_jogos_ativos_v1_')&&k!==RELATORIO_PSRPSE_EXTRAS_KEY)continue;
+  let parsed;try{parsed=JSON.parse(v);}catch(_){throw new Error('Uma lista local de atletas está em formato inválido; o cadastro não foi alterado.');}
+  if(orig&&saIdentAplicarObjeto(parsed,antigo,novo,k)){prefs.push({k,antes:v,depois:JSON.stringify(parsed)});}
+ }
+ const dados=saLocalClone(excelData);dados[index]=saLocalClone(newRow);const colunas=saLocalClone(excelColumns);
+ const gravadas=[];let failure=null,aplicadas=[];
+ await new Promise((resolve,reject)=>{
+  const tx=db.transaction(SA_LOCAL_TABLE_STORE,'readwrite'),store=tx.objectStore(SA_LOCAL_TABLE_STORE),req=store.getAll();
+  req.onerror=()=>{failure=req.error||new Error('Falha ao ler os registros locais.');tx.abort();};
+  req.onsuccess=()=>{try{
+   const tabelas=req.result||[];let principal=tabelas.find(t=>t.name==='sistema_config');
+   if(!principal||!Array.isArray(principal.rows))throw new Error('O cadastro local não foi encontrado.');
+   const entry=principal.rows.find(r=>r.chave==='principal');
+   if(!entry||!Array.isArray(entry.dados)||JSON.stringify(entry.dados[index])!==JSON.stringify(originalRow))throw new Error('O cadastro mudou desde que a edição foi aberta. Atualize o sistema e tente novamente.');
+   for(const item of tabelas){
+    if(!SA_IDENT_TABELAS.has(item.name)||!Array.isArray(item.rows))continue;
+    const copia=saLocalClone(item.rows);
+    if(orig!==dest&&saIdentTem(copia,dest)&&(!orig||saIdentTem(copia,orig)))throw new Error('Há registros com a identidade de destino já existente. Revise-os antes de alterar o cadastro.');
+    if(orig&&saIdentAplicarObjeto(copia,antigo,novo,item.name)){store.put({name:item.name,rows:copia});gravadas.push([item.name,copia]);}
+   }
+   const principalRows=saLocalClone(principal.rows),cfg=principalRows.find(r=>r.chave==='principal');
+   cfg.colunas=colunas;cfg.dados=dados;cfg.atualizado_em=new Date().toISOString();store.put({name:'sistema_config',rows:principalRows});gravadas.push(['sistema_config',principalRows]);
+   for(const pref of prefs){if(SAStorage.getItem(pref.k)!==pref.antes)throw new Error('Uma lista de atletas mudou durante a edição. Tente novamente.');aplicadas.push(pref);SAStorage.setItem(pref.k,pref.depois);}
+  }catch(e){failure=e;tx.abort();}};
+  tx.oncomplete=resolve;
+  tx.onabort=()=>{for(const item of aplicadas){try{if(SAStorage.getItem(item.k)===item.depois)SAStorage.setItem(item.k,item.antes);}catch(e){console.error('Falha ao restaurar preferência local:',e);}}reject(failure||tx.error||new Error('A atualização local foi cancelada.'));};
+  tx.onerror=()=>{};
+ });
+ // Memória e espelhos são atualizados apenas depois do compromisso atômico.
+ excelData[index]=newRow;saLastCommitted={columns:saLocalClone(colunas),data:saLocalClone(dados)};
+ if(typeof rppRespCache!=='undefined')rppRespCache={inicio:'',fim:'',rows:[]};
+ try{await AE.load(true);}catch(e){console.warn('Atletas Extras será atualizado na próxima abertura:',e);}
+ try{await carregarControlePesoStorage();}catch(e){console.warn('Controle de peso será atualizado na próxima abertura:',e);}
+ for(const [name,rows] of gravadas){try{if(typeof window.saBackupMirrorTable==='function')await window.saBackupMirrorTable(name,rows);}catch(e){console.warn('Espelho local não atualizado:',e);}}
+ try{saUpdateTrialCounter();saSiteRefreshCategoryUI();}catch(e){console.warn('Atualização visual pendente:',e);}return true;
+}
+
 async function saveNewAthlete(event) {
     event.preventDefault();
-    if (saAthletePhotoCompressionInProgress) {
-        alert('Aguarde a compressão da foto terminar antes de salvar o atleta.');
-        return;
-    }
-    const isEdit = editingAthleteIndex !== null && editingAthleteIndex !== undefined && excelData[editingAthleteIndex];
+    if(saAthleteSaveBusy)return;
+    if (saAthletePhotoCompressionInProgress) {alert('Aguarde a compressão da foto terminar antes de salvar o atleta.');return;}
+    const isEdit = editingAthleteIndex !== null && editingAthleteIndex !== undefined && !!excelData[editingAthleteIndex];
     if (!isEdit && !saCanAddAthlete()) return;
-    let row;
-    if (isEdit) {
-        row = excelData[editingAthleteIndex];
-    } else {
-        row = {};
-        excelColumns.forEach(col => { row[col] = ''; });
-    }
-    const previousPhotoValue = isEdit ? valorCampoAtleta(row, ['Foto', 'foto', 'imagem']) : '';
-    const previousPositionValue = isEdit ? posicaoEdicaoAtleta(row) : '';
-    row['Ano'] = document.getElementById('add-ano').value;
-    row['NOME COMPLETO'] = document.getElementById('add-nome').value;
-    row['APELIDO'] = document.getElementById('add-apelido').value;
-    row['Data de nascimento'] = document.getElementById('add-nascimento').value;
-    const posicaoSelecionada = normalizarPosicaoAtletaValor(document.getElementById('add-posicao').value) || 'Meia';
-    // Ao salvar outros campos (ex.: apenas a foto), mantenha Posição 1 e Posição 2 intactas.
-    if (!isEdit || posicaoSelecionada !== previousPositionValue) {
-        row['Posição 1'] = posicaoSelecionada;
-        row['Posição 2'] = posicaoSelecionada;
-        if (!excelColumns.includes('Posição 1')) excelColumns.push('Posição 1');
-        if (!excelColumns.includes('Posição 2')) excelColumns.push('Posição 2');
-    }
-    row['CIDADE'] = document.getElementById('add-cidade').value;
-    row['Contato'] = document.getElementById('add-contato').value;
-    row['RG'] = document.getElementById('add-rg').value;
-    let photoValue = uploadedPhotoBase64 || row['Foto'] || '';
-    if (/^data:image\//i.test(String(photoValue)) && window.SA_LOCAL_SERVER_READY && typeof window.saBackupStorePhotoDataUrl === 'function') {
-        try { photoValue = await window.saBackupStorePhotoDataUrl(photoValue) || photoValue; }
-        catch (error) { console.error('Gravação da foto em Fotos:', error); alert('A foto não foi gravada em Fotos. Verifique o servidor local e tente novamente.'); return; }
-    }
-    row['Foto'] = photoValue;
-    if (!isEdit) {
-        excelData.push(row);
-        selectedAthleteIndex = excelData.length - 1;
-    }
-    const saved = await saveToStorage();
-    if (!saved) return;
-    if (isEdit && previousPhotoValue && String(previousPhotoValue) !== String(photoValue)) {
-        await saRemoveReplacedAthletePhoto(previousPhotoValue, row);
-    }
+    const nome = document.getElementById('add-nome').value.trim();
+    const apelido = document.getElementById('add-apelido').value.trim();
+    const ano = document.getElementById('add-ano').value.trim();
+    const nascimento = document.getElementById('add-nascimento').value.trim();
+    const contatoDigitado = document.getElementById('add-contato').value.trim();
+    const contatoMudou = !isEdit || contatoDigitado !== saAthleteOriginalContact.trim();
+    const contatoLimpo = saContatoSomenteDigitos(contatoDigitado);
+    const invalid = (id, message) => { alert(message); document.getElementById(id)?.focus(); return false; };
+    if (!nome) return invalid('add-nome', 'Informe o nome completo do atleta.');
+    if (!apelido) return invalid('add-apelido', 'Informe o apelido do atleta.');
+    if (!/^\d{4}$/.test(ano)) return invalid('add-ano', 'Selecione o ano de nascimento do atleta.');
+    const br = nascimento.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    const iso = nascimento.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const dia = Number(br ? br[1] : iso ? iso[3] : 0), mes = Number(br ? br[2] : iso ? iso[2] : 0), anoData = Number(br ? br[3] : iso ? iso[1] : 0);
+    const dataTeste = new Date(0);dataTeste.setUTCFullYear(anoData, mes - 1, dia);
+    if (!anoData || dataTeste.getUTCFullYear() !== anoData || dataTeste.getUTCMonth() !== mes - 1 || dataTeste.getUTCDate() !== dia) return invalid('add-nascimento', 'Informe uma data de nascimento válida no formato DD/MM/AAAA.');
+    if (String(anoData) !== ano) return invalid('add-nascimento', 'O ano da data de nascimento deve ser igual ao ano selecionado.');
+    if (contatoMudou && !saContatoValidoDDD(contatoLimpo)) return invalid('add-contato', 'Informe DDD + telefone, com 10 ou 11 dígitos, sem o código 55. Exemplo: 43999034204.');
+    if (isEdit && !saAthleteExtras) {alert('Não foi possível carregar as informações do atleta. Feche e abra a edição novamente.');return;}
+
+    const uploaded=[];let committed=false;let cleanupWarning='';let row;let previousPhotoValue='';let photoValue='';
+    const originalIndex=editingAthleteIndex, originalRow=isEdit?excelData[originalIndex]:null;
+    const originalColumns=excelColumns.slice(), originalSelected=selectedAthleteIndex;
+    saAthleteSaveSetBusy(true);
+    try{
+        const savedDocs=isEdit && !saAthleteExtras.malformed ? await saAthleteUploadDocuments(uploaded) : [];
+        const originalDocs=isEdit ? saAthleteExtras.originals : [];
+        const removedPaths=isEdit ? originalDocs.map(saAthleteDocumentPath).filter(path=>path && !savedDocs.some(doc=>saAthleteDocumentPath(doc)===path)) : [];
+        row=isEdit?saLocalClone(originalRow):{};
+        if(!isEdit)excelColumns.forEach(col=>{row[col]='';});
+        previousPhotoValue=isEdit?valorCampoAtleta(row,['Foto','foto','imagem']):'';
+        const previousPositionValue=isEdit?posicaoEdicaoAtleta(row):'';
+        saAthleteSetField(row,'Ano',ano);saAthleteSetField(row,'NOME COMPLETO',nome);saAthleteSetField(row,'APELIDO',apelido);
+        const novaData=`${String(dia).padStart(2,'0')}/${String(mes).padStart(2,'0')}/${anoData}`;
+        for(const k of Object.keys(row)){const n=saAthleteKeyNormal(k);if(['nascimento','datanascimento','datadenascimento'].includes(n))row[k]=novaData;if(n==='nome'&&isEdit&&saIdentNome(row[k])===saIdentNome(saIdentDeRow(originalRow).nomeCompleto))row[k]=nome;}
+        saAthleteSetField(row,'Data de nascimento',novaData);
+        const posicaoSelecionada=normalizarPosicaoAtletaValor(document.getElementById('add-posicao').value)||'Meia';
+        if(!isEdit||posicaoSelecionada!==previousPositionValue){row['Posição 1']=posicaoSelecionada;row['Posição 2']=posicaoSelecionada;garantirColunaAtleta('Posição 1');garantirColunaAtleta('Posição 2');}
+        row['CIDADE']=document.getElementById('add-cidade').value;
+        row['Contato']=contatoMudou?contatoLimpo:saAthleteOriginalContact;
+        row['RG']=document.getElementById('add-rg').value;
+        photoValue=uploadedPhotoBase64||row['Foto']||'';row['Foto']=photoValue;
+        if(isEdit){
+            const note=saAthleteBuildNote(savedDocs);
+            if(note!==saAthleteExtras.originalRaw)saAthleteSetField(row,'Anotacoes',note);
+            const injury=document.getElementById('sa-athlete-injury').checked;
+            const card=document.getElementById('sa-athlete-red-card').checked;
+            if(injury!==atletaCadastroTemLesao(row))saAthleteSetField(row,'Lesao',injury?'sim':'');
+            if(card!==atletaCadastroTemCartaoVermelho(row))saAthleteSetField(row,'CartaoVermelho',card?'sim':'');
+        }
+        const oldId=isEdit?saIdentDeRow(originalRow):null,newId=isEdit?saIdentDeRow(row):null;
+        const identidadeAlterada=isEdit&&(saIdentChave(oldId)!==saIdentChave(newId)||String(oldId?.nomeCompleto)!==String(newId?.nomeCompleto)||String(oldId?.nascimento)!==String(newId?.nascimento)||String(oldId?.apelido)!==String(newId?.apelido)||String(oldId?.ano)!==String(newId?.ano));
+        let saved;
+        if(identidadeAlterada)saved=await saMigrarIdentidadeAtleta(originalIndex,originalRow,row);
+        else{if(isEdit)excelData[originalIndex]=row;else{excelData.push(row);selectedAthleteIndex=excelData.length-1;}saved=await saveToStorage();}
+        if(!saved)throw new Error('Não foi possível salvar o cadastro. Os anexos adicionados nesta tentativa serão descartados.');
+        committed=true;
+        if(isEdit && previousPhotoValue && String(previousPhotoValue)!==String(photoValue))await saRemoveReplacedAthletePhoto(previousPhotoValue,row);
+        if(isEdit && !saAthleteExtras.malformed){try{await saAthleteRemoveUnreferencedDocuments(removedPaths);}catch(error){console.warn('Arquivo removido da lista, mas mantido no armazenamento:',error);cleanupWarning=' Um anexo removido continua no armazenamento local; exporte e confira seu backup.';}}
+    }catch(error){
+        console.error('Erro ao salvar atleta:',error);
+        if(!committed && row){
+            if(isEdit && excelData[originalIndex]===row)excelData[originalIndex]=originalRow;
+            else if(!isEdit){const added=excelData.indexOf(row);if(added>=0)excelData.splice(added,1);}
+            excelColumns=originalColumns;selectedAthleteIndex=originalSelected;
+        }
+        if(!committed && uploaded.length){const result=await _saData.storage.from('documentos-atletas').remove(uploaded);if(result.error)console.warn('Não foi possível limpar todos os anexos temporários:',result.error);}
+        alert(error.message||'Não foi possível salvar as alterações do atleta.');
+    }finally{saAthleteSaveSetBusy(false);}
+    if(!committed)return;
     closeAddAthleteModal();
-    if (typeof renderAtletasScreen === 'function') renderAtletasScreen();
-    if (typeof renderExcelTable === 'function') renderExcelTable();
+    if(typeof renderAtletasScreen==='function')renderAtletasScreen();
+    if(typeof renderExcelTable==='function')renderExcelTable();
     saUpdateTrialCounter();
-    alert(isEdit ? 'Atleta atualizado com sucesso!' : 'Salvo com sucesso!');
+    alert((isEdit?'Atleta atualizado com sucesso!':'Salvo com sucesso!')+cleanupWarning);
 }
 
 /* === TESTES FÍSICOS === */
@@ -3267,10 +3648,35 @@ async function carregarDoArmazenamentoLocal() {
     }
 }
 
+// Usa uma janela normal e, se ela for bloqueada, tenta imprimir em um iframe local.
+// Nenhum dado do relatório é enviado para fora do navegador.
+function saOpenPrintWindow(name, features, exportar=false) {
+    try {
+        const popup = window.open('', name, features);
+        if (popup) return exportar ? saAtivarExportacaoJanela(popup) : popup;
+    } catch (_) {}
+    try {
+        const frame = document.createElement('iframe');
+        frame.setAttribute('aria-hidden', 'true');
+        frame.title = 'Documento para impressão';
+        frame.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none;';
+        document.body.appendChild(frame);
+        const target = frame.contentWindow;
+        if (!target || !target.document) { frame.remove(); return null; }
+        target.addEventListener('afterprint', () => setTimeout(() => frame.remove(), 1000), { once: true });
+        setTimeout(() => frame.remove(), 5 * 60 * 1000);
+        return exportar ? saAtivarExportacaoJanela(target) : target;
+    } catch (error) {
+        console.warn('Impressão local indisponível:', error);
+        return null;
+    }
+}
+
 function imprimirFichaAtleta() {
     var bodyContent = document.getElementById('fichaModalBody').innerHTML;
     
-    var janela = window.open('', '_blank', 'width=800,height=600');
+    var janela = saOpenPrintWindow('_blank', 'width=800,height=600');
+    if (!janela) { alert('Não foi possível abrir a impressão. Permita pop-ups neste navegador e tente novamente.'); return; }
     janela.document.write(`
         <html>
         <head>
@@ -4094,7 +4500,7 @@ function imprimirFichasTreino() {
     const cards = Array.from(document.querySelectorAll('#fichas-render-container .ficha-grupo-card'));
     if (!cards.length) { alert('Nenhuma ficha de grupo foi gerada.'); return; }
 
-    const janela = window.open('', '_blank', 'width=1200,height=800');
+    const janela = saOpenPrintWindow('_blank', 'width=1200,height=800', saIsMobile());
     if (!janela) { alert('Permita pop-ups para imprimir as fichas.'); return; }
 
     const logo=saSiteCurrentLogoSrc();
@@ -4260,15 +4666,14 @@ async function abrirExcluirConvocacaoModal(){
 async function excluirConvocacaoSelecionada(){const s=document.getElementById('convocacao-para-excluir');if(!s||!s.value)return alert('Selecione uma convocação.');if(!confirm('Excluir '+s.value+' permanentemente?'))return;const {error}=await _saData.from('convocacoes').delete().eq('nome',s.value);if(error){alert('Erro ao excluir.');return;}document.getElementById('excluir-convocacao-modal').style.display='none';alert('Convocação excluída.');}
 
 function exportarConvocacaoPDF(){
- // Exportação robusta: usa a impressão da própria convocação.
- // No diálogo do navegador, escolha "Microsoft Print to PDF" ou "Salvar como PDF".
- imprimirConvocacaoCampo();
+ const card=document.querySelector('#campo-convocacao-modal .campo-card');
+ saCompartilharOuSalvarPDF(card,'convocacao','landscape','convocacao-campo','Convocação',()=>{const f=imprimirConvocacaoCampo; if(saIsMobile()) { /* rota de impressão nativa sem recursão */ return saImprimirConvocacaoOriginal(); } return f();});
 }
 
 function abrirArbitragemConvocacao(){
  const salvo=JSON.parse(SAStorage.getItem('sa_escalacao_v1')||'{}');
  const lista=Object.keys(salvo).map(i=>{const r=excelData[i]||{};const nomeKey=Object.keys(r).find(k=>k.toLowerCase().includes('nome completo'))||Object.keys(r).find(k=>k.toLowerCase()==='nome');const apelidoKey=Object.keys(r).find(k=>k.toLowerCase().includes('apelido'));const dataKey=Object.keys(r).find(k=>k.toLowerCase().includes('nascimento'));return{numero:salvo[i].numero||'',nome:nomeKey?r[nomeKey]||'':'',apelido:apelidoKey?r[apelidoKey]||'':'',nascimento:dataKey?convertExcelDate(r[dataKey]):''}}).sort((a,b)=>String(a.nome).localeCompare(String(b.nome),'pt-BR'));
- const w=window.open('','_blank','width=800,height=800');if(!w)return;
+ const w=saOpenPrintWindow('_blank', 'width=800,height=800');if(!w){alert('Não foi possível abrir a impressão. Permita pop-ups e tente novamente.');return;}
  const logo=saSiteEscape(saSiteCurrentLogoSrc());
  const linhas=lista.map(a=>`<tr><td>${a.numero}</td><td>${a.nome}</td><td>${a.apelido}</td><td>${a.nascimento}</td></tr>`).join('');
  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Arbitragem</title><style>@page{size:A4 portrait;margin:8mm}*{box-sizing:border-box}body{font-family:Arial;margin:0}.vb-brand-corner{position:absolute;top:4px;right:6px;z-index:8;display:inline-block;padding:3px 7px;border:1px solid #40b8a8;border-radius:999px;background:#fff;color:#173b59;font:800 9px/1.2 Arial,sans-serif;white-space:nowrap}.ficha{position:relative;border:1px solid #111;min-height:0;height:auto}.cab{height:38mm;border-bottom:1px solid #111;display:flex;align-items:center;padding:8px 40mm 8px 20px;gap:100px}.cab img{width:32mm;height:32mm;object-fit:contain}.cab h1{font-size:28px;margin:0}.tab{width:100%;border-collapse:collapse;table-layout:fixed;font-size:10px}.tab th{text-align:left;border-bottom:1px solid #111;padding:4px}.tab td{height:15px;border-bottom:1px dotted #111;border-right:1px dotted #111;padding:2px 4px}.tab th:nth-child(1),.tab td:nth-child(1){width:11%;font-weight:bold}.tab th:nth-child(2),.tab td:nth-child(2){width:46%;font-weight:bold}.tab th:nth-child(2),.tab td:nth-child(2){width:46%}.tab th:nth-child(3),.tab td:nth-child(3){width:23%}.tab th:nth-child(4),.tab td:nth-child(4){width:20%}</style></head><body><div class="ficha"><div class="vb-brand-corner">VBolonheze Sports</div><div class="cab"><img src="${logo}"><h1>ARBITRAGEM</h1></div><table class="tab"><thead><tr><th>Número</th><th>Nome Completo</th><th>Apelido</th><th>Data Nasc.</th></tr></thead><tbody>${linhas}</tbody></table></div><script>window.onload=()=>setTimeout(()=>window.print(),500)<\/script></body></html>`);w.document.close();
@@ -4279,32 +4684,10 @@ function abrirMinutagemConvocacao(){
  const arr=Object.keys(salvo).map(i=>{const r=excelData[i]||{};const nk=Object.keys(r).find(k=>k.toLowerCase().includes('apelido'))||Object.keys(r).find(k=>k.toLowerCase().includes('nome'));return{n:salvo[i].numero||'',nome:nk&&r[nk]||'' ,res:salvo[i].status==='reserva'}});const tit=arr.filter(x=>!x.res).sort((a,b)=>(Number(a.n)||999)-(Number(b.n)||999)),sup=arr.filter(x=>x.res).sort((a,b)=>(Number(a.n)||999)-(Number(b.n)||999));
  const linha=(x,i)=>`<tr><td>${x.n}</td><td>${x.nome}</td><td></td><td class="box"></td><td class="box"></td><td class="tempo-box"></td><td class="minuto"></td><td class="tempo-box"></td><td></td><td></td><td class="box"></td><td class="box"></td></tr>`;const supl=sup.map(x=>`<tr><td>${x.n}</td><td>${x.nome}</td></tr>`).join('');
  const logo=saSiteEscape(saSiteCurrentLogoSrc());
- const w=window.open('','_blank','width=1100,height=800');if(!w)return;w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Minutagem</title><style>@page{size:A4 landscape;margin:10mm}*{box-sizing:border-box}body{font-family:Arial;margin:0;font-size:12px;position:relative}.vb-brand-corner{position:absolute;top:1px;right:1px;z-index:8;display:inline-block;padding:3px 7px;border:1px solid #40b8a8;border-radius:999px;background:#fff;color:#173b59;font:800 9px/1.2 Arial,sans-serif;white-space:nowrap}.head{height:92px;display:flex;align-items:center;justify-content:center;gap:35px}.head img{width:82px}.sq{width:64px;height:38px;border:3px solid #111}.x{font-size:34px;font-weight:bold}.adv{font-size:22px;font-weight:bold}.tbl{width:100%;border-collapse:collapse;table-layout:fixed}.tbl th{text-align:center;height:23px}.tbl td{height:18px;border:1px solid #111;padding:1px 4px}.tbl td:nth-child(1){width:52px;text-align:center;border-right:0}.tbl td:nth-child(2){width:180px;text-align:left}.tbl td:nth-child(3){width:55px}.tbl td:nth-child(4),.tbl td:nth-child(5),.tbl td:nth-child(9),.tbl td:nth-child(10){width:62px}.tbl td.box,.tbl td.tempo-box,.tbl td.minuto{border:1px solid #111!important;background:#fff;height:16px}.tbl th:nth-child(1),.tbl td:nth-child(1){font-size:10px!important;width:32px!important;min-width:32px!important;max-width:32px!important;text-align:center!important}.tbl td:nth-child(7),.tbl th:nth-child(7){text-align:center!important} .tbl th:nth-child(3),.tbl td:nth-child(3),.tbl th:nth-child(10),.tbl td:nth-child(10){width:42px!important;min-width:42px!important;max-width:42px!important;padding:1px!important;text-align:center!important;white-space:nowrap}.tbl th:nth-child(4),.tbl td:nth-child(4),.tbl th:nth-child(5),.tbl td:nth-child(5),.tbl th:nth-child(11),.tbl td:nth-child(11),.tbl th:nth-child(12),.tbl td:nth-child(12){width:40px!important;min-width:40px!important;max-width:40px!important;padding:1px!important;text-align:center!important;white-space:nowrap}.tbl th:nth-child(6),.tbl td:nth-child(6),.tbl th:nth-child(8),.tbl td:nth-child(8){width:32px!important;min-width:32px!important;max-width:32px!important;padding:1px!important;text-align:center!important;white-space:nowrap}.tbl th:nth-child(7),.tbl td:nth-child(7){width:58px!important;min-width:58px!important;max-width:58px!important;text-align:center!important}.ca{background:#ff0}.cv{color:red}.bar{background:#c00;color:#fff;text-align:center;font-weight:bold;height:18px}.bottom{display:grid;grid-template-columns:240px 1fr;gap:60px}.sup td{height:15px;border-bottom:1px solid #111;border-right:2px dotted #111}.info{margin-top:15px;font-size:20px;text-align:center}.check{display:inline-block;width:36px;height:34px;border:2px solid #e33;vertical-align:middle;margin:8px 15px}.notes{border:3px solid #111;height:90px;margin-top:0;padding:4px;font-size:12px}</style></head><body><div class="vb-brand-corner">VBolonheze Sports</div><div class="head"><img src="${logo}"><span class="sq"></span><span class="x">X</span><span class="sq"></span><span class="adv">${adv||'Adversário'}</span></div><table class="tbl"><thead><tr><th>Número</th><th>Titulares</th><th>Gols</th><th class="ca">C.A.</th><th class="cv">C.V.</th><th>1º</th><th>Minuto</th><th>2º</th><th>Suplentes</th><th>Gols</th><th class="ca">C.A.</th><th class="cv">C.V.</th></tr></thead><tbody>${tit.map(linha).join('')}<tr><td colspan="12" class="bar">Suplentes</td></tr></tbody></table><div class="bottom"><table class="sup"><tbody>${supl}</tbody></table><div><div class="info"><b>Data:</b> ${data||'____/____/______'}<br><span class="check"></span> Casa <span class="check"></span> Fora</div><div class="notes">Informações adicionais</div></div></div><script>window.onload=()=>setTimeout(()=>window.print(),500)<\/script></body></html>`);w.document.close();
+ const w=saOpenPrintWindow('_blank', 'width=1100,height=800');if(!w){alert('Não foi possível abrir a impressão. Permita pop-ups e tente novamente.');return;}w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Minutagem</title><style>@page{size:A4 landscape;margin:10mm}*{box-sizing:border-box}body{font-family:Arial;margin:0;font-size:12px;position:relative}.vb-brand-corner{position:absolute;top:1px;right:1px;z-index:8;display:inline-block;padding:3px 7px;border:1px solid #40b8a8;border-radius:999px;background:#fff;color:#173b59;font:800 9px/1.2 Arial,sans-serif;white-space:nowrap}.head{height:92px;display:flex;align-items:center;justify-content:center;gap:35px}.head img{width:82px}.sq{width:64px;height:38px;border:3px solid #111}.x{font-size:34px;font-weight:bold}.adv{font-size:22px;font-weight:bold}.tbl{width:100%;border-collapse:collapse;table-layout:fixed}.tbl th{text-align:center;height:23px}.tbl td{height:18px;border:1px solid #111;padding:1px 4px}.tbl td:nth-child(1){width:52px;text-align:center;border-right:0}.tbl td:nth-child(2){width:180px;text-align:left}.tbl td:nth-child(3){width:55px}.tbl td:nth-child(4),.tbl td:nth-child(5),.tbl td:nth-child(9),.tbl td:nth-child(10){width:62px}.tbl td.box,.tbl td.tempo-box,.tbl td.minuto{border:1px solid #111!important;background:#fff;height:16px}.tbl th:nth-child(1),.tbl td:nth-child(1){font-size:10px!important;width:32px!important;min-width:32px!important;max-width:32px!important;text-align:center!important}.tbl td:nth-child(7),.tbl th:nth-child(7){text-align:center!important} .tbl th:nth-child(3),.tbl td:nth-child(3),.tbl th:nth-child(10),.tbl td:nth-child(10){width:42px!important;min-width:42px!important;max-width:42px!important;padding:1px!important;text-align:center!important;white-space:nowrap}.tbl th:nth-child(4),.tbl td:nth-child(4),.tbl th:nth-child(5),.tbl td:nth-child(5),.tbl th:nth-child(11),.tbl td:nth-child(11),.tbl th:nth-child(12),.tbl td:nth-child(12){width:40px!important;min-width:40px!important;max-width:40px!important;padding:1px!important;text-align:center!important;white-space:nowrap}.tbl th:nth-child(6),.tbl td:nth-child(6),.tbl th:nth-child(8),.tbl td:nth-child(8){width:32px!important;min-width:32px!important;max-width:32px!important;padding:1px!important;text-align:center!important;white-space:nowrap}.tbl th:nth-child(7),.tbl td:nth-child(7){width:58px!important;min-width:58px!important;max-width:58px!important;text-align:center!important}.ca{background:#ff0}.cv{color:red}.bar{background:#c00;color:#fff;text-align:center;font-weight:bold;height:18px}.bottom{display:grid;grid-template-columns:240px 1fr;gap:60px}.sup td{height:15px;border-bottom:1px solid #111;border-right:2px dotted #111}.info{margin-top:15px;font-size:20px;text-align:center}.check{display:inline-block;width:36px;height:34px;border:2px solid #e33;vertical-align:middle;margin:8px 15px}.notes{border:3px solid #111;height:90px;margin-top:0;padding:4px;font-size:12px}</style></head><body><div class="vb-brand-corner">VBolonheze Sports</div><div class="head"><img src="${logo}"><span class="sq"></span><span class="x">X</span><span class="sq"></span><span class="adv">${adv||'Adversário'}</span></div><table class="tbl"><thead><tr><th>Número</th><th>Titulares</th><th>Gols</th><th class="ca">C.A.</th><th class="cv">C.V.</th><th>1º</th><th>Minuto</th><th>2º</th><th>Suplentes</th><th>Gols</th><th class="ca">C.A.</th><th class="cv">C.V.</th></tr></thead><tbody>${tit.map(linha).join('')}<tr><td colspan="12" class="bar">Suplentes</td></tr></tbody></table><div class="bottom"><table class="sup"><tbody>${supl}</tbody></table><div><div class="info"><b>Data:</b> ${data||'____/____/______'}<br><span class="check"></span> Casa <span class="check"></span> Fora</div><div class="notes">Informações adicionais</div></div></div><script>window.onload=()=>setTimeout(()=>window.print(),500)<\/script></body></html>`);w.document.close();
 }
 
-/* Atualiza a tela após 10 minutos sem atividade, evitando manter uma cópia antiga aberta */
-let timerInatividadeSistema;
-const TEMPO_INATIVIDADE_SISTEMA = 10 * 60 * 1000;
-let inicioInatividadeSistema=Date.now();
-function atualizarRelogioInatividade(){
-    let el=document.getElementById('relogio-inatividade-sistema');
-    if(!el){el=document.createElement('div');el.id='relogio-inatividade-sistema';el.title='Tempo para atualização automática';document.body.appendChild(el);}
-    const restante=Math.max(0,TEMPO_INATIVIDADE_SISTEMA-(Date.now()-inicioInatividadeSistema));
-    const minutos=String(Math.floor(restante/60000)).padStart(2,'0');
-    const segundos=String(Math.floor(restante%60000/1000)).padStart(2,'0');
-    el.textContent='↻ '+minutos+':'+segundos;
-}
-function reiniciarTimerInatividadeSistema(){
-    clearTimeout(timerInatividadeSistema);inicioInatividadeSistema=Date.now();atualizarRelogioInatividade();
-    timerInatividadeSistema=setTimeout(()=>{window.__SA_SKIP_BEFOREUNLOAD=true;window.location.reload();},TEMPO_INATIVIDADE_SISTEMA);
-}
-function iniciarRelogioInatividadeSistema(){
-    ['mousedown','keydown','input','change','scroll','touchstart','pointerdown'].forEach(evt=>document.addEventListener(evt,reiniciarTimerInatividadeSistema,{passive:true}));
-    reiniciarTimerInatividadeSistema();
-    setInterval(atualizarRelogioInatividade,1000);
-}
-if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',iniciarRelogioInatividadeSistema); else iniciarRelogioInatividadeSistema();
-
+/* Nesta edição local não há recarga automática por inatividade. */
 
 /* === MÓDULO JOGOS === */
 const JOGOS_TREINADORES_TABELA = 'treinadores_jogos';
@@ -5017,16 +5400,19 @@ async function gerarRelatorioJogosPDFMobileDireto(jogos,professor){
  const ry=sy+11,rh=30,rw=(W-16-2*1.5)/3;pdfRelatorioDrawBoxTable(doc,8,ry,rw,rh,'Vitórias',pdfRelatorioResultadoLinhas(stats.vitoriasDetalhes));pdfRelatorioDrawBoxTable(doc,8+rw+1.5,ry,rw,rh,'Empates',pdfRelatorioResultadoLinhas(stats.empatesDetalhes));pdfRelatorioDrawBoxTable(doc,8+2*(rw+1.5),ry,rw,rh,'Derrotas',pdfRelatorioResultadoLinhas(stats.derrotasDetalhes));
  const ly=ry+33,lh=54,lw=(W-16-3*1.5)/4;pdfRelatorioDrawBoxTable(doc,8,ly,lw,lh,'Top 10 atletas mais tempo',stats.maisMinutos.slice(0,10).map(a=>[nomeExibicaoEstatisticaJogos(a),`${a.minutos} min`]),{header:[0,146,69],headerText:[255,255,255]});pdfRelatorioDrawBoxTable(doc,8+lw+1.5,ly,lw,lh,'Top 10 atletas menos tempo',stats.menosMinutos.slice(0,10).map(a=>[nomeExibicaoEstatisticaJogos(a),`${a.minutos} min`]),{header:[208,0,0],headerText:[255,255,255]});pdfRelatorioDrawBoxTable(doc,8+2*(lw+1.5),ly,lw,lh,'Gols',stats.goleadores.map(a=>[nomeExibicaoEstatisticaJogos(a),String(a.gols)]),{header:[0,0,0],headerText:[255,255,255]});pdfRelatorioDrawBoxTable(doc,8+3*(lw+1.5),ly,lw,lh,'Cartões',stats.cartoes.map(a=>[nomeExibicaoEstatisticaJogos(a),`${a.amarelo} CA / ${a.vermelho} CV`]),{header:[241,196,15],headerText:[0,0,0],fontSize:5.0});
  doc.setFontSize(6);doc.setTextColor(80);doc.text('VBolonheze Sports • Relatório gerado automaticamente',W/2,H-5,{align:'center'});
- const filename=saSanitizeFilename(`Relatório de Jogos - ${professor}`)+'.pdf';const blob=doc.output('blob');const file=new File([blob],filename,{type:'application/pdf'});if(navigator.canShare&&navigator.canShare({files:[file]}))await navigator.share({files:[file],title:`Relatório de Jogos - ${professor}`,text:'Relatório de Jogos VBolonheze Sports'});else doc.save(filename);return true;
+ const filename=saNomeArquivoPDF(`Relatório de Jogos - ${professor}`);const blob=doc.output('blob');await saEntregarPDF(blob,filename,`Relatório de Jogos - ${professor}`,()=>saImprimirRelatorioJogos(jogos,professor));return true;
 }
 async function abrirRelatorioJogosProfessor(){
  const professor=professorJogosAtual||'Geral';
  const {data,error}=await _saData.from('jogos').select('id,professor,numero_jogo,nome,dados,criado_em').eq('professor',professor).order('numero_jogo',{ascending:true});
  if(error){console.error(error);alert('Erro ao carregar jogos para o relatório.');return;}
  if(!data||!data.length){alert('Nenhum jogo salvo para gerar relatório.');return;}
- if(typeof saIsMobile==='function'&&saIsMobile()&&window.jspdf&&window.jspdf.jsPDF){try{if(await gerarRelatorioJogosPDFMobileDireto(data,professor))return;}catch(e){console.error('Falha no PDF direto mobile:',e);}}
+ if(typeof saIsMobile==='function'&&saIsMobile()&&saPodeCompartilharPDF()&&window.jspdf&&window.jspdf.jsPDF){try{if(await gerarRelatorioJogosPDFMobileDireto(data,professor))return;}catch(e){console.error('Falha no PDF direto mobile:',e);}}
+ saImprimirRelatorioJogos(data,professor);
+}
+function saImprimirRelatorioJogos(data,professor){
  const {style,body,title}=montarRelatorioJogosMarkup(data,professor);
- const w=window.open('','_blank','width=900,height=1100');if(!w)return alert('Permita pop-ups para gerar o relatório.');
+ const w=saOpenPrintWindow('_blank', 'width=900,height=1100');if(!w)return alert('Permita pop-ups para gerar o relatório.');
  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>${style}</head><body>${body}<script>window.onload=()=>setTimeout(()=>window.print(),500)<\/script></body></html>`);w.document.close();
 }
 async function salvarJogoLocal(){
@@ -5424,9 +5810,9 @@ async function excluirTrabalhoAtual(catId){
  const btn=document.querySelector(`.td-cat-panel[data-cat="${catId}"] .excluir-trabalho`);
  if(btn){btn.disabled=true;btn.textContent='Excluindo...';}
  try{
-  await removerArquivoAntigoTrabalho(catId);
   const {error}=await _saData.from('trabalhos_diarios').delete().eq('categoria_id',catId);
   if(error)throw error;
+  await removerArquivoAntigoTrabalho(catId);
   estado.registro=null;
   estado.file=null;
   alert('Trabalho atual excluído com sucesso.');
@@ -5458,22 +5844,32 @@ async function enviarTrabalhoDiario(catId){
  const atletas=destinatariosTrabalho(catId);
  if(!aeAtletasCat(catId,'trabalho').length)return alert('Nenhum atleta selecionado para este trabalho.');
  const btn=document.querySelector(`.td-cat-panel[data-cat="${catId}"] .enviar`);if(btn){btn.disabled=true;btn.textContent='Salvando...';}
+ const anterior=estado.registro;let novoPath='',gravado=false;
  try{
-  await removerArquivoAntigoTrabalho(catId);
   const safeName=estado.file.name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9_.-]+/gi,'_');
-  const path=`${catId}/${Date.now()}_${safeName}`;
+  const token=globalThis.crypto?.randomUUID?.()||Math.random().toString(36).slice(2);
+  const path=`${catId}/${Date.now()}_${token}_${safeName}`;
   const up=await _saData.storage.from(TRABALHOS_DIARIOS_BUCKET).upload(path,estado.file,{upsert:true,contentType:'application/pdf'});
   if(up.error)throw up.error;
+  novoPath=path;
   const {data:pub}= _saData.storage.from(TRABALHOS_DIARIOS_BUCKET).getPublicUrl(path);
   const agora=new Date();
   const dataReferencia=calcularDataReferenciaTrabalhoDiario(agora);
   const payload={categoria_id:catId,categoria_label:cat.label,anos_padrao:cat.anos,arquivo_nome:estado.file.name,storage_path:path,public_url:pub&&pub.publicUrl?pub.publicUrl:'',atletas,data_referencia:dataReferencia,atualizado_em:agora.toISOString()};
   const res=await _saData.from('trabalhos_diarios').upsert(payload,{onConflict:'categoria_id'});
   if(res.error)throw res.error;
+  gravado=true;
   estado.registro=payload;estado.file=null;
+  if(anterior?.storage_path && anterior.storage_path!==path){
+   try{const removed=await _saData.storage.from(TRABALHOS_DIARIOS_BUCKET).remove([anterior.storage_path]);if(removed.error)console.warn('Arquivo anterior preservado:',removed.error);}
+   catch(err){console.warn('Arquivo anterior preservado:',err);}
+  }
   alert('Trabalho salvo localmente para '+cat.label+'.');
   openTrabalhoDiarioModal();
- }catch(e){console.error(e);alert('Não foi possível salvar o trabalho no armazenamento local.');}
+ }catch(e){
+  if(novoPath&&!gravado){try{await _saData.storage.from(TRABALHOS_DIARIOS_BUCKET).remove([novoPath]);}catch(cleanupError){console.warn('Arquivo novo não pôde ser removido:',cleanupError);}}
+  console.error(e);alert('Não foi possível salvar o trabalho no armazenamento local. O trabalho anterior foi mantido.');
+ }
  finally{if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-upload"></i> Salvar/Substituir';}}
 }
 
@@ -5541,11 +5937,9 @@ async function removerArquivoAntigoPlanejamento(catId){
 function abrirPlanejamentoAtual(catId){
  const reg=planejamentoSemanalEstado[catId]&&planejamentoSemanalEstado[catId].registro;
  if(!reg)return alert('Nenhum planejamento atual para abrir.');
- let url=reg.public_url||'';
- if(!url&&reg.storage_path){try{const {data}= _saData.storage.from(PLANEJAMENTOS_SEMANAIS_BUCKET).getPublicUrl(reg.storage_path);url=data&&data.publicUrl?data.publicUrl:'';}catch(e){console.warn(e);}}
- const localUrl=saLocalSafeUrl(url,'');
- if(!localUrl)return alert('Este arquivo não está disponível localmente. Links externos são bloqueados nesta edição.');
- window.open(localUrl,'_blank','noopener,noreferrer');
+ const url=saPortalDocumentoUrl(reg,'planejamento');
+ if(!url)return alert('Este arquivo não está disponível localmente. Links externos são bloqueados nesta edição.');
+ window.open(url,'_blank','noopener,noreferrer');
 }
 async function excluirPlanejamentoAtual(catId){
  const estado=planejamentoSemanalEstado[catId];const reg=estado&&estado.registro;
@@ -5571,22 +5965,25 @@ async function enviarPlanejamentoSemanal(catId){
  const atletas=destinatariosPlanejamento(catId);
  if(!aeAtletasCat(catId,'planejamento').length)return alert('Nenhum atleta selecionado para este planejamento.');
  const btn=document.querySelector(`#planejamento-semanal-modal .td-cat-panel[data-cat="${catId}"] .enviar`);if(btn){btn.disabled=true;btn.textContent='Salvando...';}
+ const anterior=estado.registro;let novoPath='',gravado=false;
  try{
-  await removerArquivoAntigoPlanejamento(catId);
   const safeName=estado.file.name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9_.-]+/gi,'_');
-  const path=`${catId}/${Date.now()}_${safeName}`;
+  const token=globalThis.crypto?.randomUUID?.()||Math.random().toString(36).slice(2);
+  const path=`${catId}/${Date.now()}_${token}_${safeName}`;
   const up=await _saData.storage.from(PLANEJAMENTOS_SEMANAIS_BUCKET).upload(path,estado.file,{upsert:true,contentType:'application/pdf'});
   if(up.error)throw up.error;
+  novoPath=path;
   const {data:pub}= _saData.storage.from(PLANEJAMENTOS_SEMANAIS_BUCKET).getPublicUrl(path);
   const agora=new Date();
   const dataReferencia=calcularDataReferenciaPlanejamentoSemanal(agora);
   const payload={categoria_id:catId,categoria_label:cat.label,anos_padrao:cat.anos,arquivo_nome:estado.file.name,storage_path:path,public_url:pub&&pub.publicUrl?pub.publicUrl:'',atletas,data_referencia:dataReferencia,atualizado_em:agora.toISOString()};
   const res=await _saData.from('planejamentos_semanais').upsert(payload,{onConflict:'categoria_id'});
   if(res.error)throw res.error;
-  estado.registro=payload;estado.file=null;
+  gravado=true;estado.registro=payload;estado.file=null;
+  if(anterior?.storage_path&&anterior.storage_path!==path){try{const removed=await _saData.storage.from(PLANEJAMENTOS_SEMANAIS_BUCKET).remove([anterior.storage_path]);if(removed.error)console.warn('Arquivo anterior preservado:',removed.error);}catch(err){console.warn('Arquivo anterior preservado:',err);}}
   alert('Planejamento salvo localmente para '+cat.label+'.');
   openPlanejamentoSemanalModal();
- }catch(e){console.error(e);alert('Não foi possível salvar o planejamento no armazenamento local.');}
+ }catch(e){if(novoPath&&!gravado){try{await _saData.storage.from(PLANEJAMENTOS_SEMANAIS_BUCKET).remove([novoPath]);}catch(err){console.warn('Arquivo novo não pôde ser removido:',err);}}console.error(e);alert('Não foi possível salvar o planejamento no armazenamento local. O planejamento anterior foi mantido.');}
  finally{if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-upload"></i> Salvar/Substituir';}}
 }
 
@@ -5686,12 +6083,12 @@ async function renderRelatorioVisualizacaoDocumento(){
  const filtros=tipo==='planejamento_semanal'
   ? `<button class="${modo==='semana'?'active':''}" onclick="setRelatorioVisualizacaoModo('semana')">Semana</button><button class="${modo==='mes'?'active':''}" onclick="setRelatorioVisualizacaoModo('mes')">Mês</button>`
   : `<button class="${modo==='dia'?'active':''}" onclick="setRelatorioVisualizacaoModo('dia')">Dia</button><button class="${modo==='semana'?'active':''}" onclick="setRelatorioVisualizacaoModo('semana')">Semana</button><button class="${modo==='mes'?'active':''}" onclick="setRelatorioVisualizacaoModo('mes')">Mês</button>`;
- modal.innerHTML=`<div class="relatorio-visualizacao-card"><button class="relatorios-menu-close" onclick="closeRelatorioVisualizacao()">×</button><div class="rv-header"><img src="${logo}"><div><h2>Relatório de visualização</h2><strong>${escapeHtmlJogos(cfg.titulo)} - ${escapeHtmlJogos(cat.label)}</strong></div><img src="${logo}"></div><div class="rv-filtros">${filtros}<button onclick="imprimirRelatorioVisualizacao()">PDF/Imprimir</button></div>${conteudo}</div>`;
+ modal.innerHTML=`<div class="relatorio-visualizacao-card"><button class="relatorios-menu-close" onclick="closeRelatorioVisualizacao()">×</button><div class="rv-header"><img src="${logo}"><div><h2>Relatório de visualização</h2><strong>${escapeHtmlJogos(cfg.titulo)} - ${escapeHtmlJogos(cat.label)}</strong></div><img src="${logo}"></div><div class="rv-filtros">${filtros}<button onclick="imprimirRelatorioVisualizacao()">Exportar PDF</button></div>${conteudo}</div>`;
  modal.style.display='flex';
 }
 function setRelatorioVisualizacaoModo(modo){if(relatorioVisualizacaoState.tipo==='planejamento_semanal'&&modo==='dia')modo='semana';relatorioVisualizacaoState.modo=modo;renderRelatorioVisualizacaoDocumento();}
 function closeRelatorioVisualizacao(){const m=document.getElementById('relatorio-visualizacao-modal');if(m)m.style.display='none';}
-function imprimirRelatorioVisualizacao(){const card=document.querySelector('#relatorio-visualizacao-modal .relatorio-visualizacao-card');if(!card)return;const w=window.open('','_blank','width=1000,height=800');w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Relatório de visualização</title><style>body{font-family:Arial,sans-serif;margin:12px}.relatorios-menu-close,.rv-filtros{display:none}.rv-header{display:flex;align-items:center;justify-content:center;gap:20px}.rv-header img{width:60px}.rv-header h2{text-align:center;margin:0}.rv-header strong{display:block;text-align:center}.rv-table{width:100%;border-collapse:collapse;font-size:12px}.rv-table th{background:#173b59;color:#40b8a8}.rv-table th,.rv-table td{border:1px solid #999;padding:5px;text-align:center}.rv-table td:first-child{text-align:left}.rv-check span{color:green;font-weight:bold;font-size:16px}.rv-list-report{border:1px solid #d8e8c4;background:#fbfff7;padding:10px}.rv-list-date{font-size:17px;color:#5c8a2a;font-weight:bold;border-bottom:1px solid #e5eadf;padding:6px}.rv-list-obs{font-size:13px;margin:8px 0}.rv-list-cols{display:grid;grid-template-columns:1fr 1fr;gap:24px}.rv-list-col h3{font-size:14px;margin:6px 0}.rv-list-col.ok h3,.rv-list-col.ok li{color:#078c49}.rv-list-col.no h3,.rv-list-col.no li{color:#c00000}.rv-list-col ul{list-style:none;padding:0;margin:0}.rv-list-col li{font-size:12px;line-height:1.35;margin:2px 0}.rv-list-col li.empty{color:#777}@media(max-width:700px){.rv-list-cols{grid-template-columns:1fr}}</style></head><body>${card.outerHTML}<script>window.onload=()=>setTimeout(()=>window.print(),400)<\/script></body></html>`);w.document.close();}
+function imprimirRelatorioVisualizacao(){const card=document.querySelector('#relatorio-visualizacao-modal .relatorio-visualizacao-card');if(!card)return;const w=saOpenPrintWindow('_blank', 'width=1000,height=800', true);if(!w){alert('Não foi possível abrir a impressão. Permita pop-ups e tente novamente.');return;}w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Relatório de visualização</title><style>body{font-family:Arial,sans-serif;margin:12px}.relatorios-menu-close,.rv-filtros{display:none}.rv-header{display:flex;align-items:center;justify-content:center;gap:20px}.rv-header img{width:60px}.rv-header h2{text-align:center;margin:0}.rv-header strong{display:block;text-align:center}.rv-table{width:100%;border-collapse:collapse;font-size:12px}.rv-table th{background:#173b59;color:#40b8a8}.rv-table th,.rv-table td{border:1px solid #999;padding:5px;text-align:center}.rv-table td:first-child{text-align:left}.rv-check span{color:green;font-weight:bold;font-size:16px}.rv-list-report{border:1px solid #d8e8c4;background:#fbfff7;padding:10px}.rv-list-date{font-size:17px;color:#5c8a2a;font-weight:bold;border-bottom:1px solid #e5eadf;padding:6px}.rv-list-obs{font-size:13px;margin:8px 0}.rv-list-cols{display:grid;grid-template-columns:1fr 1fr;gap:24px}.rv-list-col h3{font-size:14px;margin:6px 0}.rv-list-col.ok h3,.rv-list-col.ok li{color:#078c49}.rv-list-col.no h3,.rv-list-col.no li{color:#c00000}.rv-list-col ul{list-style:none;padding:0;margin:0}.rv-list-col li{font-size:12px;line-height:1.35;margin:2px 0}.rv-list-col li.empty{color:#777}@media(max-width:700px){.rv-list-cols{grid-template-columns:1fr}}</style></head><body>${card.outerHTML}<script>window.onload=()=>setTimeout(()=>window.print(),400)<\/script></body></html>`);w.document.close();}
 
 
 
@@ -6023,8 +6420,8 @@ async function limparRespostaPreparacaoFisica(){
 
 /* === PORTAL LOCAL DO ATLETA === */
 const SA_PORTAL_RESPOSTAS_TABELA = 'respostas_diarias';
-const SA_PORTAL_TABS = ['inicio','psr','pse','preparacao'];
-let saPortalState = { view:'login', athlete:null, data:'', responses:[], preparacao:[], loading:false, saving:false, notice:'' };
+const SA_PORTAL_TABS = ['inicio','psr','pse','trabalhos','planejamento','preparacao'];
+let saPortalState = { view:'login', athlete:null, anoFiltro:'', data:'', responses:[], preparacao:[], trabalhos:[], trabalhosError:false, loading:false, saving:false, notice:'' };
 function saPortalHojeISO(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
 function saPortalEsc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function saPortalNorm(v){return String(v??'').trim().replace(/\s+/g,' ').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();}
@@ -6067,16 +6464,11 @@ function saPortalAtletasCadastrados(){
   return {index,row,id:{...id,nomeCompleto:nome,nascimento},nomeCompleto:nome,nome,apelido:String(id.apelido||nome),nascimento,ano:String(id.ano||''),anoNascimento:saPortalBirthYear(nascimento)||saPortalBirthYear(id.ano||''),foto,key:saPortalAtletaKey(id)};
  }).filter(a=>a.nome).sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR')||a.index-b.index);
 }
-function saPortalRegistroDoAtleta(row,athlete){
- if(!row||!athlete)return false;
- const rowNome=saPortalNorm(row.nome_completo||row.nomeCompleto||row.nome||'');
- const athleteNome=saPortalNorm(athlete.nomeCompleto||athlete.nome_completo||athlete.nome||'');
- if(!rowNome||rowNome!==athleteNome)return false;
- const rowNasc=saPortalBirthDateKey(row.nascimento||row.data_nascimento||'');
- const athleteNasc=saPortalBirthDateKey(athlete.nascimento||athlete.data_nascimento||'');
- if(rowNasc&&athleteNasc)return rowNasc===athleteNasc;
- return saPortalBirthYear(row.nascimento||row.data_nascimento||row.ano||'')===saPortalBirthYear(athlete.nascimento||athlete.data_nascimento||athlete.ano||'');
-}
+// Identidade estrita: nome completo e data de nascimento integral.
+function saIdentNome(v){return String(v??'').normalize('NFC').trim().replace(/\s+/g,' ').toLocaleLowerCase('pt-BR');}
+function saIdentData(v){if(/^\d{4}$/.test(String(v??'').trim()))return '';const d=saPortalBirthDateKey(v);if(!/^\d{4}-\d{2}-\d{2}$/.test(d))return '';const dt=new Date(d+'T00:00:00Z');return !isNaN(dt)&&dt.toISOString().slice(0,10)===d?d:'';}
+function saIdentChave(o){const id=o?.id&&typeof o.id==='object'?o.id:(o||{});const n=saIdentNome(id.nomeCompleto||id.nome_completo||id.nome||'');const d=saIdentData(id.nascimento||id.data_nascimento||'');return n&&d?n+'||'+d:'';}
+function saPortalRegistroDoAtleta(row,athlete){const k=saIdentChave(row);return !!k&&k===saIdentChave(athlete);}
 function saPortalJson(value){if(value&&typeof value==='object')return value;if(typeof value==='string'){try{const x=JSON.parse(value);return x&&typeof x==='object'?x:{};}catch(_){}}return {};}
 function saPortalPsrScore(psr){
  const p=saPortalJson(psr),v=['sono','fadiga','dor_muscular','estresse_mental','motivacao'].map(k=>Number(String(p[k]??'').replace(',','.')));
@@ -6099,62 +6491,220 @@ function saPortalEnsureModal(){
 async function openPortalAtleta(){
  if(SAStorage.getItem(SA_MODE_KEY)!=='free_trial'){alert('Entre primeiro pelo botão Teste grátis.');return;}
  try{if(window.SA_READY)await window.SA_READY;}catch(e){console.warn('Portal local: a inicialização do cadastro terminou com avisos.',e);}
- saPortalState={view:'login',athlete:null,data:saPortalHojeISO(),responses:[],preparacao:[],loading:false,saving:false,notice:''};
+ saPortalState={view:'login',athlete:null,anoFiltro:'',data:saPortalHojeISO(),responses:[],preparacao:[],trabalhos:[],trabalhosError:false,loading:false,saving:false,notice:''};
  const modal=saPortalEnsureModal();modal.style.display='flex';saPortalRender();
 }
 function saPortalFecharSemRetorno(){
- saPortalState={view:'login',athlete:null,data:saPortalHojeISO(),responses:[],preparacao:[],loading:false,saving:false,notice:''};
+ saPortalCalRequest++;saPortalState={view:'login',athlete:null,anoFiltro:'',data:saPortalHojeISO(),responses:[],preparacao:[],trabalhos:[],trabalhosError:false,loading:false,saving:false,notice:''};
  const modal=document.getElementById('sa-portal-atleta-modal');if(modal)modal.style.display='none';
 }
-function saPortalSair(){saPortalFecharSemRetorno();if(typeof modernV3VoltarInicio==='function')modernV3VoltarInicio();}
+function saPortalSair(){if(saPortalState.saving)return;saPortalFecharSemRetorno();if(typeof modernV3VoltarInicio==='function')modernV3VoltarInicio();}
+// O ano usado no filtro é o mesmo ano cadastrado utilizado no Trabalho Diário.
+// Um cadastro antigo sem ano continua acessível na opção “Sem ano informado”.
+function saPortalAnoDoAtleta(a){return saPortalBirthYear(a?.ano)||saPortalBirthYear(a?.nascimento)||'';}
 function saPortalRenderLogin(){
  const modal=document.getElementById('sa-portal-atleta-modal');if(!modal)return;
  const atletas=saPortalAtletasCadastrados();
- const options=atletas.map(a=>{const label=a.apelido&&saPortalNorm(a.apelido)!==saPortalNorm(a.nome)?`${a.apelido} — ${a.nome}`:a.nome;return `<option value="${a.index}">${saPortalEsc(label)}</option>`;}).join('');
- modal.innerHTML=`<div class="sa-portal-shell sa-portal-login"><header class="sa-portal-top"><div class="sa-portal-brand"><img src="sa-logo.svg" alt="VB Sports"><div><strong>Portal do Atleta</strong><span>VBolonheze Sports · acesso local</span></div></div><button type="button" class="sa-portal-exit" onclick="saPortalSair()">Voltar ao sistema</button></header><main class="sa-portal-login-main"><div class="sa-portal-login-card"><div class="sa-portal-login-mark">🏅</div><h1>Entrar no portal</h1><p>Selecione o atleta para acessar o portal.</p>${atletas.length?`<label for="sa-portal-atleta-select">Atleta</label><select id="sa-portal-atleta-select"><option value="">Selecione seu nome</option>${options}</select><button type="button" class="sa-portal-primary" onclick="saPortalEntrar()">Entrar</button>`:`<div class="sa-portal-empty"><strong>Nenhum atleta cadastrado.</strong><span>Cadastre atletas no sistema; eles aparecerão aqui automaticamente.</span></div>`}${saPortalState.notice?`<p class="sa-portal-alert" role="alert">${saPortalEsc(saPortalState.notice)}</p>`:''}<small class="sa-portal-privacy">Acesso local sem senha. A seleção do atleta não é uma autenticação segura; evite usar em dispositivo compartilhado.</small></div></main></div>`;
+ const anos=[...new Set(atletas.map(a=>saPortalAnoDoAtleta(a)).filter(Boolean))].sort((a,b)=>Number(b)-Number(a));
+ if(atletas.some(a=>!saPortalAnoDoAtleta(a)))anos.push('sem-ano');
+ const yearOptions=anos.map(y=>`<option value="${saPortalEsc(y)}" ${saPortalState.anoFiltro===y?'selected':''}>${y==='sem-ano'?'Sem ano informado':saPortalEsc(y)}</option>`).join('');
+ modal.innerHTML=`<div class="sa-portal-shell sa-portal-login"><header class="sa-portal-top"><div class="sa-portal-brand"><img src="${saPortalEsc(saSiteCurrentLogoSrc())}" alt="Logo da equipe"><div><strong>Portal do Atleta</strong><span>Acesso local</span></div></div><button type="button" class="sa-portal-exit" ${saPortalState.saving?'disabled':''} onclick="saPortalSair()">Voltar ao sistema</button></header><main class="sa-portal-login-main"><div class="sa-portal-login-card"><div class="sa-portal-login-mark">🏅</div><span class="sa-portal-login-kicker">SEU ESPAÇO NO TIME</span><h1>Entrar no portal</h1><p>Escolha seu ano e depois selecione seu nome.</p>${atletas.length?`<label for="sa-portal-ano-select">Ano</label><select id="sa-portal-ano-select" onchange="saPortalFiltrarAtletas(this.value)"><option value="">Selecione o ano</option>${yearOptions}</select><label for="sa-portal-atleta-select">Atleta</label><select id="sa-portal-atleta-select" disabled><option value="">Escolha o ano primeiro</option></select><button type="button" class="sa-portal-primary" onclick="saPortalEntrar()">Entrar no meu portal <span aria-hidden="true">→</span></button>`:`<div class="sa-portal-empty"><strong>Nenhum atleta cadastrado.</strong><span>Cadastre atletas no sistema; eles aparecerão aqui automaticamente.</span></div>`}${saPortalState.notice?`<p class="sa-portal-alert" role="alert">${saPortalEsc(saPortalState.notice)}</p>`:''}<small class="sa-portal-privacy">Acesso local sem senha. A seleção do atleta não é uma autenticação segura; evite usar em dispositivo compartilhado.</small></div></main></div>`;
+ if(saPortalState.anoFiltro)saPortalFiltrarAtletas(saPortalState.anoFiltro);
+}
+function saPortalFiltrarAtletas(year){
+ const modal=document.getElementById('sa-portal-atleta-modal'),select=modal?.querySelector('#sa-portal-atleta-select');if(!select)return;
+ saPortalState.anoFiltro=String(year||'');
+ const matches=saPortalAtletasCadastrados().filter(a=>(saPortalAnoDoAtleta(a)||'sem-ano')===saPortalState.anoFiltro);
+ select.disabled=!saPortalState.anoFiltro;
+ select.innerHTML='<option value="">'+(select.disabled?'Escolha o ano primeiro':'Selecione seu nome')+'</option>'+matches.map(a=>{
+  const label=a.apelido&&saPortalNorm(a.apelido)!==saPortalNorm(a.nome)?`${a.apelido} — ${a.nome}`:a.nome;
+  return `<option value="${a.index}">${saPortalEsc(label)}${saPortalAnoDoAtleta(a)?' — '+saPortalEsc(saPortalAnoDoAtleta(a)):''}</option>`;
+ }).join('');
 }
 async function saPortalEntrar(){
  if(saPortalState.loading)return;
  const modal=document.getElementById('sa-portal-atleta-modal');
+ const ano=String(modal?.querySelector('#sa-portal-ano-select')?.value||'');
  const selecionado=String(modal?.querySelector('#sa-portal-atleta-select')?.value||'').trim();
  const idx=selecionado===''?NaN:Number(selecionado);
- const athlete=saPortalAtletasCadastrados().find(a=>a.index===idx);
- if(!athlete){saPortalState.notice='Selecione um atleta cadastrado.';saPortalRender();return;}
- saPortalState.athlete=athlete;saPortalState.view='inicio';saPortalState.data=saPortalHojeISO();saPortalState.notice='';
+ const athlete=saPortalAtletasCadastrados().find(a=>a.index===idx&&(saPortalAnoDoAtleta(a)||'sem-ano')===ano);
+ if(!ano||!athlete){saPortalState.anoFiltro=ano;saPortalState.notice=!ano?'Escolha o ano do atleta.':'Selecione um atleta do ano escolhido.';saPortalRender();return;}
+ const chave=saIdentChave(athlete.id);
+ if(chave&&saPortalAtletasCadastrados().filter(x=>saIdentChave(x.id)===chave).length!==1){saPortalState.notice='Este atleta precisa ter nome completo e data de nascimento únicos no cadastro para acessar registros individuais.';saPortalRender();return;}
+ saPortalState.anoFiltro=ano;saPortalState.athlete=athlete;saPortalState.view='inicio';saPortalState.data=saPortalHojeISO();saPortalState.notice='';
  await saPortalCarregarDados();
 }
+// Os anos registrados no envio são a referência do destinatário. Para registros
+// antigos sem anos_padrao, usa-se a configuração atual da categoria.
+function saPortalAnosTrabalho(r){
+ let raw=r?.anos_padrao;
+ if(raw===undefined||raw===null)raw=saSiteCategoriesObject()[r?.categoria_id]?.anos||[];
+ if(typeof raw==='string'){
+  const original=raw;
+  try{const parsed=JSON.parse(raw);raw=Array.isArray(parsed)?parsed:(typeof parsed==='string'||typeof parsed==='number'?[parsed]:(original.match(/\b(?:19|20)\d{2}\b/g)||[]));}
+  catch(_){raw=(original.match(/\b(?:19|20)\d{2}\b/g)||[]);}
+ }
+ if(typeof raw==='number')raw=[raw];
+ return Array.isArray(raw)?[...new Set(raw.map(saPortalBirthYear).filter(Boolean))]:[];
+}
+// Ano efetivo por módulo; o cadastro e a identidade permanecem reais.
+function saPortalTrabalhoDoAtleta(row,athlete,modulo='trabalho'){
+ if(!AE.estado.ready || AE.estado.error)return false;
+ const ano=AE.ano(athlete?.id||athlete,modulo)||saPortalAnoDoAtleta(athlete);
+ return !!ano&&saPortalAnosTrabalho(row).includes(String(ano));
+}
+function saPortalDocumentoUrl(r,modulo='trabalho'){
+ if(!r)return '';
+ if(r.storage_path){
+  try{return saLocalSafeUrl(_saData.storage.from(modulo==='planejamento'?PLANEJAMENTOS_SEMANAIS_BUCKET:TRABALHOS_DIARIOS_BUCKET).getPublicUrl(r.storage_path)?.data?.publicUrl||'','');}
+  catch(_){return '';}
+ }
+ return saLocalSafeUrl(r.public_url||'','');
+}
+function saPortalTrabalhoUrl(r){return saPortalDocumentoUrl(r,'trabalho');}
+// Recalcula somente a apresentação; nunca move nem modifica os documentos.
+function saPortalReaplicarExtras(){
+ const a=saPortalState.athlete;if(!a)return;
+ const indisponivel=!AE.estado.ready||!!AE.estado.error;
+ saPortalState.extrasError=indisponivel;
+ saPortalState.trabalhosError=indisponivel||!!saPortalState.trabalhosConsultaError;
+ saPortalState.planejamentosError=indisponivel||!!saPortalState.planejamentosConsultaError;
+ const ordem=(a,b)=>String(b.atualizado_em||'').localeCompare(String(a.atualizado_em||''));
+ saPortalState.trabalhos=saPortalState.trabalhosError?[]:(saPortalState.todosTrabalhos||[]).filter(r=>saPortalTrabalhoDoAtleta(r,a,'trabalho')).sort(ordem);
+ saPortalState.planejamentos=saPortalState.planejamentosError?[]:(saPortalState.todosPlanejamentos||[]).filter(r=>saPortalTrabalhoDoAtleta(r,a,'planejamento')).sort(ordem);
+}
+async function saPortalRegistrarAcesso(reg,modulo,athlete){
+ const tipo=modulo==='planejamento'?'planejamento_semanal':'trabalho_diario';
+ const tabela='documentos_acessos_locais', agora=new Date().toISOString();
+ return saLocalQueueTable(tabela,async()=>{
+  const rows=await saLocalReadTable(tabela);
+  const idx=rows.findIndex(r=>r.tipo===tipo&&r.categoria_id===reg.categoria_id&&saPortalRegistroDoAtleta(r,athlete.id));
+  const old=idx<0?{}:rows[idx];
+  const acessos=Array.isArray(old.acessos)?old.acessos.slice():[];
+  const chave=rvChaveDocumento(reg), pos=acessos.findIndex(a=>String(a?.chave_documento||a?.storage_path||'')===chave&&rvAccessDate(tipo,a)===rvAccessDate(tipo,{data_documento:rvDataDocumento(reg)}));
+  const acesso={...(pos<0?{}:acessos[pos]),chave_documento:chave,data_documento:rvDataDocumento(reg),primeiro_acesso_em:pos<0?agora:(acessos[pos].primeiro_acesso_em||agora),ultimo_acesso_em:agora};
+  if(pos<0)acessos.push(acesso);else acessos[pos]=acesso;
+  const row=saLocalWithId({...old,tipo,categoria_id:reg.categoria_id,nome_completo:athlete.nomeCompleto,nascimento:athlete.nascimento,atleta_key:athlete.key,acessos});
+  if(idx<0)rows.push(row);else rows[idx]=row;
+  await saLocalWriteTable(tabela,rows);
+ });
+}
+function saPortalAbrirDocumento(modulo,index){
+ const reg=(modulo==='planejamento'?saPortalState.planejamentos:saPortalState.trabalhos)?.[index],athlete=saPortalState.athlete;
+ if(!reg||!athlete||!saPortalTrabalhoDoAtleta(reg,athlete,modulo))return;
+ const url=saPortalDocumentoUrl(reg,modulo);
+ if(!url){alert('O PDF não está disponível neste dispositivo.');return;}
+ window.open(url,'_blank','noopener,noreferrer');
+ saPortalRegistrarAcesso(reg,modulo,athlete).catch(e=>{console.error('Falha ao registrar abertura do documento local:',e);alert('O PDF foi solicitado, mas não foi possível registrar a abertura no relatório local.');});
+}
+function saPortalAbrirTrabalho(index){saPortalAbrirDocumento('trabalho',index);}
+function saPortalDocumentosCards(modulo){
+ const plano=modulo==='planejamento';
+ const rows=(plano?saPortalState.planejamentos:saPortalState.trabalhos)||[];
+ const erro=plano?saPortalState.planejamentosError:saPortalState.trabalhosError;
+ const nome=plano?'Planejamento Semanal':'Trabalho Diário',plural=plano?'planejamentos':'trabalhos';
+ if(erro)return `<div class="sa-portal-feed-empty" role="alert"><span aria-hidden="true">⚠️</span><div><strong>Não foi possível carregar os ${plural}.</strong><small>${saPortalState.extrasError?'Não foi possível conferir os vínculos de Atletas Extras. ':''}Tente atualizar o portal. As respostas e mensagens não foram apagadas.</small></div></div>`;
+ if(!rows.length)return `<div class="sa-portal-feed-empty"><span aria-hidden="true">📋</span><div><strong>Nenhum ${plano?'planejamento':'trabalho'} enviado para seu ano.</strong><small>Quando o professor salvar um documento da sua categoria, ele aparecerá aqui.</small></div></div>`;
+ return rows.map((r,i)=>{
+  const available=!!saPortalDocumentoUrl(r,modulo),anos=saPortalAnosTrabalho(r).join(' e ');
+  return `<article class="sa-portal-post"><div class="sa-portal-post-top"><span class="sa-portal-post-icon" aria-hidden="true">📄</span><div><strong>${nome}</strong><small>${saPortalEsc(r.categoria_label||'Sua categoria')} · ${saPortalEsc(anos)}</small></div><span class="sa-portal-post-date">${saPortalEsc(trabalhoFormatarDataReferenciaBR(r.data_referencia)||saPortalBR(r.atualizado_em)||'')}</span></div><h3>${saPortalEsc(r.arquivo_nome||(plano?'Planejamento da semana.pdf':'Trabalho do dia.pdf'))}</h3><p>${available?'Seu professor compartilhou este documento para seu ano de participação.':'O PDF não está disponível neste dispositivo.'}</p><button type="button" class="sa-portal-open-pdf" onclick="saPortalAbrirDocumento('${modulo}',${i})" ${available?'':'disabled'}>📄 Abrir ${plano?'planejamento':'trabalho'} em PDF <span aria-hidden="true">↗</span></button></article>`;
+ }).join('');
+}
+function saPortalTrabalhosCards(){return saPortalDocumentosCards('trabalho');}
+function saPortalRenderDocumentos(modulo){
+ const plano=modulo==='planejamento',nome=plano?'Planejamento Semanal':'Trabalho Diário';
+ return `<section class="sa-portal-feed-view"><div class="sa-portal-feed-heading"><div><span class="sa-portal-eyebrow">DO PROFESSOR PARA VOCÊ</span><h1>${nome}</h1><p>Documentos enviados para seu ano de participação neste módulo.</p></div><button type="button" class="sa-portal-refresh" onclick="saPortalCarregarDados()">Atualizar</button></div><div class="sa-portal-feed-list">${saPortalDocumentosCards(modulo)}</div><p class="sa-portal-footnote">Somente documentos salvos neste dispositivo aparecem aqui. Cada envio substitui o anterior da mesma categoria.</p></section>`;
+}
+function saPortalRenderTrabalhos(){return saPortalRenderDocumentos('trabalho');}
+function saPortalRenderPlanejamento(){return saPortalRenderDocumentos('planejamento');}
 async function saPortalCarregarDados(){
  if(!saPortalState.athlete)return;
+ const athlete=saPortalState.athlete;
  saPortalState.loading=true;saPortalRender();
  try{
-  const [{data:respostas,error:respostasError},{data:preparacao,error:preparacaoError}]=await Promise.all([
+  const [extras,{data:respostas,error:respostasError},{data:preparacao,error:preparacaoError},{data:trabalhos,error:trabalhosError},{data:planejamentos,error:planejamentosError}]=await Promise.all([
+   AE.load(true).then(()=>null).catch(e=>e),
    _saData.from(SA_PORTAL_RESPOSTAS_TABELA).select('*').order('data',{ascending:false}).limit(5000),
-   _saData.from(PREPARACAO_FISICA_TABELA).select('*').order('criado_em',{ascending:false}).limit(2000)
+   _saData.from(PREPARACAO_FISICA_TABELA).select('*').order('criado_em',{ascending:false}).limit(2000),
+   _saData.from('trabalhos_diarios').select('*'),
+   _saData.from('planejamentos_semanais').select('*')
   ]);
+  if(saPortalState.athlete!==athlete)return;
   if(respostasError)throw respostasError;if(preparacaoError)throw preparacaoError;
-  saPortalState.responses=(respostas||[]).filter(r=>saPortalRegistroDoAtleta(r,saPortalState.athlete.id)).sort((a,b)=>saPortalDateISO(b.data).localeCompare(saPortalDateISO(a.data)));
-  saPortalState.preparacao=(preparacao||[]).filter(r=>{
-   const key=String(r.atleta_key||'');return (key&&key===saPortalState.athlete.key)||saPortalRegistroDoAtleta(r,saPortalState.athlete.id);
-  }).sort((a,b)=>String(b.criado_em||'').localeCompare(String(a.criado_em||'')));
+  saPortalState.responses=(respostas||[]).filter(r=>saPortalRegistroDoAtleta(r,athlete.id)).sort((a,b)=>saPortalDateISO(b.data).localeCompare(saPortalDateISO(a.data)));
+  saPortalState.preparacao=(preparacao||[]).filter(r=>saPortalRegistroDoAtleta(r,athlete.id)).sort((a,b)=>String(b.criado_em||'').localeCompare(String(a.criado_em||'')));
+  saPortalState.todosTrabalhos=trabalhos||[];saPortalState.todosPlanejamentos=planejamentos||[];
+  saPortalState.trabalhosConsultaError=!!trabalhosError;saPortalState.planejamentosConsultaError=!!planejamentosError;
+  saPortalReaplicarExtras();
+  if(extras)console.warn('Não foi possível conferir os vínculos locais.',extras);
+  if(trabalhosError)console.warn('Não foi possível carregar os trabalhos locais:',trabalhosError);
+  if(planejamentosError)console.warn('Não foi possível carregar os planejamentos locais:',planejamentosError);
   saPortalState.notice='';
- }catch(error){console.error('Portal do atleta: falha ao carregar dados locais.',error);saPortalState.notice='Alguns dados locais não puderam ser carregados. Tente atualizar o portal.';}
- finally{saPortalState.loading=false;saPortalRender();}
+ }catch(error){console.error('Portal do atleta: falha ao carregar dados locais.',error);if(saPortalState.athlete===athlete){saPortalState.trabalhosError=true;saPortalState.planejamentosError=true;saPortalState.notice='Alguns dados locais não puderam ser carregados. Tente atualizar o portal.';}}
+ finally{if(saPortalState.athlete===athlete){saPortalState.loading=false;saPortalRender();}}
 }
-function saPortalSetView(view){if(!SA_PORTAL_TABS.includes(view))return;saPortalState.view=view;saPortalRender();if(view==='preparacao')saPortalMarcarRespostasLidas();}
-function saPortalSetDate(value){const iso=saPortalDateISO(value);if(!iso)return;saPortalState.data=iso;saPortalRender();}
+// Os formulários permanecem visíveis; a gravação acompanha o calendário da
+// categoria efetiva em cada módulo e é conferida novamente antes de salvar.
+let saPortalCalRequest=0;
+function saPortalCapturarRascunho(){
+ const tipo=saPortalState.view,modal=document.getElementById('sa-portal-atleta-modal');if(!modal||!['psr','pse'].includes(tipo)||!saPortalState.athlete)return;
+ const data=saPortalState.data;if(!data)return;
+ saPortalState.rascunhos=saPortalState.rascunhos||{};let item;
+ if(tipo==='psr'){
+  item={};['sono','fadiga','dor_muscular','estresse_mental','motivacao'].forEach(k=>{item[k]=modal.querySelector(`input[name="sa-portal-psr-${k}"]:checked`)?.value||'';});
+  const note=modal.querySelector('#sa-portal-psr-note');if(!note)return;item.dor_descricao=note.value;
+ }else{
+  const dur=modal.querySelector('#sa-portal-pse-duration'),note=modal.querySelector('#sa-portal-pse-note');if(!dur||!note)return;
+  item={valor:modal.querySelector('input[name="sa-portal-pse-value"]:checked')?.value??'',duracao_minutos:dur.value,descricao:note.value};
+ }
+ saPortalState.rascunhos[tipo+'|'+data]=item;
+}
+function saPortalRascunho(tipo,data){return saPortalState.rascunhos?.[tipo+'|'+data]||null;}
+async function saPortalConsultarCalendario(athlete,date){
+ if(!athlete||!saIdentChave(athlete.id)||!saPortalDateISO(date))throw new Error('Não foi possível identificar o atleta ou a data.');
+ await AE.load(true);
+ const cats={psr:AE.categoria(athlete.id,'psr'),pse:AE.categoria(athlete.id,'pse')};
+ const {data:rows,error}=await _saData.from('dias_treino_excecao').select('*').eq('data',date);if(error)throw error;
+ const saida={data:date};
+ for(const tipo of ['psr','pse']){
+  const cat=cats[tipo];if(!cat||!CAL_TREINO_CATS.some(x=>x.id===cat)){saida[tipo]=false;saida[tipo+'Motivo']='A categoria deste atleta não está configurada para este questionário.';continue;}
+  const matches=(rows||[]).filter(x=>x.categoria===cat);
+  if(matches.length>1)throw new Error('Há configurações duplicadas para esta data e categoria.');
+  const ex=matches[0],campo=tipo+'_liberado';
+  if(ex&&typeof ex[campo]!=='boolean')throw new Error('Configuração de calendário incompleta para esta data.');
+  saida[tipo]=ex?ex[campo]===true:calTreinoPadrao(cat,calTreinoParse(date));
+  saida[tipo+'Motivo']=saida[tipo]?'Liberado para a categoria nesta data.':'Questionário não liberado no calendário para a categoria nesta data.';
+ }
+ return saida;
+}
+function saPortalEstadoPermite(tipo){return saPortalState.calendario?.data===saPortalState.data&&saPortalState.calendario?.[tipo]===true;}
+function saPortalEstadoCalendario(tipo){
+ const c=saPortalState.calendario;if(!c||c.data!==saPortalState.data)return 'Verificando o calendário…';
+ return c.erro||c[tipo+'Motivo']||'Configuração indisponível.';
+}
+async function saPortalAtualizarCalendario(){
+ const athlete=saPortalState.athlete,date=saPortalState.data,token=++saPortalCalRequest;if(!athlete||!date)return;
+ saPortalState.calendario={data:date};
+ try{const estado=await saPortalConsultarCalendario(athlete,date);if(token!==saPortalCalRequest||saPortalState.athlete!==athlete||saPortalState.data!==date)return;saPortalCapturarRascunho();saPortalState.calendario=estado;}
+ catch(e){if(token!==saPortalCalRequest||saPortalState.athlete!==athlete||saPortalState.data!==date)return;saPortalCapturarRascunho();saPortalState.calendario={data:date,erro:!saIdentChave(athlete.id)?'Cadastre nome completo e data de nascimento válidos para consultar a liberação.':'Não foi possível conferir o calendário. Atualize e tente novamente.'};console.warn('Calendário do portal local:',e);}
+ if(['psr','pse'].includes(saPortalState.view))saPortalRender();
+}
+function saPortalReverCalendario(){if(saPortalState.saving)return;saPortalCapturarRascunho();saPortalState.calendario=null;saPortalRender();saPortalAtualizarCalendario();}
+function saPortalSetView(view){if(saPortalState.saving||!SA_PORTAL_TABS.includes(view))return;saPortalCapturarRascunho();saPortalState.view=view;saPortalRender();if(['psr','pse'].includes(view))saPortalAtualizarCalendario();if(view==='preparacao')saPortalMarcarRespostasLidas();}
+function saPortalSetDate(value){if(saPortalState.saving)return;const iso=saPortalDateISO(value);if(!iso)return;saPortalCapturarRascunho();saPortalState.data=iso;saPortalState.calendario=null;saPortalRender();saPortalAtualizarCalendario();}
 function saPortalPsrQuestion(key,label,help,selected){
  const radios=[1,2,3,4,5].map(n=>`<label class="sa-portal-scale-option"><input type="radio" name="sa-portal-psr-${key}" value="${n}" ${String(selected)===String(n)?'checked':''}><span>${n}</span></label>`).join('');
  return `<fieldset class="sa-portal-question"><legend>${saPortalEsc(label)}</legend><div class="sa-portal-scale">${radios}</div><small>${saPortalEsc(help)}</small></fieldset>`;
 }
 function saPortalRenderHeader(){
  const a=saPortalState.athlete;
- const tabs=[['inicio','Painel','⌂'],['psr','PSR','💚'],['pse','PSE','🔥'],['preparacao','Preparação Física','🩺']];
+ const tabs=[['inicio','Início','⌂'],['psr','PSR','💚'],['pse','PSE','🔥'],['trabalhos','Trabalho Diário','📄'],['planejamento','Planejamento','🗓️'],['preparacao','Preparação Física','🩺']];
  const nome=String(a.apelido||a.nomeCompleto||a.nome||'Atleta');
  const iniciais=nome.trim().split(/\s+/).slice(0,2).map(p=>Array.from(p)[0]||'').join('').toUpperCase()||'AT';
  const foto=saLocalSafeImageUrl(a.foto||'','');
  const fotoHTML=foto?`<img class="sa-portal-athlete-photo" src="${saPortalEsc(foto)}" alt="Foto de ${saPortalEsc(nome)}" onerror="this.onerror=null;this.style.display='none';this.previousElementSibling.style.display='grid'">`:'';
  const fotoFallback=`<span class="sa-portal-athlete-photo-fallback" ${foto?'style="display:none"':''}>${saPortalEsc(iniciais)}</span>`;
- return `<header class="sa-portal-top"><div class="sa-portal-brand"><img class="sa-portal-team-logo" src="${saPortalEsc(saSiteCurrentLogoSrc())}" alt="VB Sports"><div class="sa-portal-athlete-photo-wrap">${fotoFallback}${fotoHTML}</div><div><strong>Portal do Atleta</strong><span>${saPortalEsc(nome)} · ${saPortalEsc(a.anoNascimento||'')}</span></div></div><button type="button" class="sa-portal-exit" onclick="saPortalSair()">Sair do portal</button></header><nav class="sa-portal-tabs">${tabs.map(([id,label,ico])=>`<button type="button" class="${saPortalState.view===id?'active':''}" onclick="saPortalSetView('${id}')"><span>${ico}</span>${label}</button>`).join('')}</nav>`;
+ return `<header class="sa-portal-top"><div class="sa-portal-brand"><img class="sa-portal-team-logo" src="${saPortalEsc(saSiteCurrentLogoSrc())}" alt="VB Sports"><div class="sa-portal-athlete-photo-wrap">${fotoFallback}${fotoHTML}</div><div><strong>Portal do Atleta</strong><span>${saPortalEsc(nome)} · ${saPortalEsc(a.anoNascimento||'')}</span></div></div><button type="button" class="sa-portal-exit" ${saPortalState.saving?'disabled':''} onclick="saPortalSair()">Sair do portal</button></header><nav class="sa-portal-tabs">${tabs.map(([id,label,ico])=>`<button type="button" class="${saPortalState.view===id?'active':''}" ${saPortalState.saving?'disabled':''} onclick="saPortalSetView('${id}')"><span>${ico}</span>${label}</button>`).join('')}</nav>`;
 }
 function saPortalRenderInicio(){
  const hoje=saPortalHojeISO(),resp=saPortalRespostaDoDia(hoje),psrOk=saPortalPsrCompleto(resp),pse=saPortalPseValue(resp),pseOk=pse!==null;
@@ -6163,19 +6713,24 @@ function saPortalRenderInicio(){
  const history=saPortalState.responses.slice(0,8);
  const histHtml=history.length?`<div class="sa-portal-history"><div class="sa-portal-history-head"><b>Atividade recente</b><span>Dados locais</span></div>${history.map(r=>{const score=saPortalPsrScore(r.psr),v=saPortalPseValue(r),p=saPortalJson(r.pse);return `<div class="sa-portal-history-row"><strong>${saPortalEsc(saPortalBR(r.data))}</strong><span>PSR ${score===null?'—':score+'/22'}</span><span>PSE ${v===null?'—':v}</span><small>${v!==null&&v>0?saPortalEsc(p.duracao_minutos||120)+' min':''}</small></div>`;}).join('')}</div>`:'<div class="sa-portal-empty"><strong>Sem respostas ainda.</strong><span>Preencha o PSR e o PSE para começar seu histórico.</span></div>';
  const replies=avisos.slice(0,3).map(r=>`<article class="sa-portal-reply"><strong>Resposta da Preparação Física</strong><p>${saPortalEsc(r.resposta)}</p><small>${r.resposta_ate?'Visível até '+saPortalEsc(saPortalBR(r.resposta_ate)):'Disponível no portal'}</small></article>`).join('');
- return `<section class="sa-portal-welcome"><div><span class="sa-portal-eyebrow">BEM-VINDO(A)</span><h1>Olá, ${saPortalEsc(aSafe(saPortalState.athlete.apelido||saPortalState.athlete.nome))}</h1><p>Seus registros de recuperação, esforço e preparação física ficam neste dispositivo.</p></div><div class="sa-portal-badge">${saPortalEsc(saPortalState.athlete.anoNascimento||'')}</div></section><div class="sa-portal-summary"><button type="button" class="sa-portal-summary-card" onclick="saPortalSetView('psr')"><span>PSR de hoje</span><b>${psrOk?'Preenchido':'Pendente'}</b><small>${psrOk?'Toque para consultar ou atualizar':'Registrar recuperação e bem-estar'}</small></button><button type="button" class="sa-portal-summary-card" onclick="saPortalSetView('pse')"><span>PSE de hoje</span><b>${pseOk?'Preenchido':'Pendente'}</b><small>${pseOk?'Toque para consultar ou atualizar':'Registrar esforço após o treino'}</small></button><button type="button" class="sa-portal-summary-card ${pendentes?'attention':''}" onclick="saPortalSetView('preparacao')"><span>Preparação Física</span><b>${pendentes?pendentes+' pendente(s)':'Acompanhar'}</b><small>Enviar queixa e consultar orientações</small></button></div>${saPortalState.notice?`<p class="sa-portal-alert">${saPortalEsc(saPortalState.notice)}</p>`:''}${replies?`<section class="sa-portal-section"><h2>Orientações recentes</h2>${replies}</section>`:''}<section class="sa-portal-section"><h2>Seu histórico</h2>${histHtml}</section><p class="sa-portal-footnote">O PSR/PSE preenchido aqui alimenta os relatórios e o Monitoramento de Carga do sistema.</p>`;
+ const a=saPortalState.athlete, nome=aSafe(a.apelido||a.nomeCompleto||a.nome||'Atleta');
+ const iniciais=nome.split(/\s+/).slice(0,2).map(p=>Array.from(p)[0]||'').join('').toUpperCase()||'AT';
+ const foto=saLocalSafeImageUrl(a.foto||'','');
+ const fotoHTML=foto?`<img src="${saPortalEsc(foto)}" alt="Foto de ${saPortalEsc(nome)}" onerror="this.hidden=true;this.previousElementSibling.hidden=false">`:'';
+ const avatar=`<div class="sa-portal-profile-photo"><span ${foto?'hidden':''}>${saPortalEsc(iniciais)}</span>${fotoHTML}</div>`;
+ return `<section class="sa-portal-profile"><div class="sa-portal-profile-cover"><span>VB SPORTS <i>•</i> PORTAL DO ATLETA</span><span>● Acesso local</span></div><div class="sa-portal-profile-body">${avatar}<div class="sa-portal-profile-copy"><span class="sa-portal-eyebrow">MEU PERFIL</span><h1>Olá, ${saPortalEsc(nome)}!</h1><p>${saPortalEsc(a.nomeCompleto||nome)} ${saPortalAnoDoAtleta(a)?' · Ano '+saPortalEsc(saPortalAnoDoAtleta(a)):''}</p><small>Seu espaço para acompanhar o dia a dia do time.</small></div><div class="sa-portal-profile-chip">🏅 Atleta</div></div></section><div class="sa-portal-home-head"><div><span class="sa-portal-eyebrow">SEU DIA COMEÇA AQUI</span><h2>Como você está hoje?</h2></div><span>${saPortalEsc(saPortalBR(hoje))}</span></div><div class="sa-portal-summary sa-portal-summary-social"><button type="button" class="sa-portal-summary-card sa-portal-psr-card" onclick="saPortalSetView('psr')"><span class="sa-portal-summary-icon">💚</span><span>RECUPERAÇÃO</span><b>Responder PSR</b><small>${psrOk?'✓ Preenchido hoje · toque para atualizar':'Pendente hoje · conte como você está'}</small></button><button type="button" class="sa-portal-summary-card sa-portal-pse-card" onclick="saPortalSetView('pse')"><span class="sa-portal-summary-icon">🔥</span><span>ESFORÇO</span><b>Responder PSE</b><small>${pseOk?'✓ Preenchido hoje · toque para atualizar':'Pendente hoje · avalie seu treino'}</small></button><button type="button" class="sa-portal-summary-card sa-portal-prep-card ${pendentes?'attention':''}" onclick="saPortalSetView('preparacao')"><span class="sa-portal-summary-icon">🩺</span><span>CUIDADO COM VOCÊ</span><b>Preparação Física</b><small>${pendentes?pendentes+' mensagem(ns) pendente(s)':'Envie uma mensagem ou veja orientações'}</small></button></div>${saPortalState.notice?`<p class="sa-portal-alert">${saPortalEsc(saPortalState.notice)}</p>`:''}<section class="sa-portal-feed-section"><div class="sa-portal-section-title"><div><span class="sa-portal-eyebrow">MURAL DO TIME</span><h2>Trabalho Diário</h2></div><button type="button" onclick="saPortalSetView('trabalhos')">Ver trabalhos →</button></div><div class="sa-portal-feed-list">${saPortalTrabalhosCards()}</div></section><section class="sa-portal-feed-section"><div class="sa-portal-section-title"><div><span class="sa-portal-eyebrow">ORGANIZAÇÃO DA SEMANA</span><h2>Planejamento Semanal</h2></div><button type="button" onclick="saPortalSetView('planejamento')">Ver planejamento →</button></div><div class="sa-portal-feed-list">${saPortalDocumentosCards('planejamento')}</div></section>${replies?`<section class="sa-portal-section"><h2>Orientações recentes</h2>${replies}</section>`:''}<section class="sa-portal-section"><h2>Seu histórico</h2>${histHtml}</section><p class="sa-portal-footnote">O PSR/PSE preenchido aqui alimenta os relatórios e o Monitoramento de Carga do sistema.</p>`;
 }
 function aSafe(value){return String(value??'').replace(/\s+/g,' ').trim();}
 function saPortalRenderPsr(){
- const row=saPortalRespostaDoDia(saPortalState.data),p=saPortalJson(row?.psr);
- return `<section class="sa-portal-form-card"><div class="sa-portal-form-head"><div><span class="sa-portal-eyebrow">RECUPERAÇÃO DIÁRIA</span><h1>Questionário PSR</h1><p>Como você está se sentindo hoje? Use a escala de 1 a 5.</p></div><label>Data<input type="date" value="${saPortalEsc(saPortalState.data)}" max="${saPortalHojeISO()}" onchange="saPortalSetDate(this.value)"></label></div>${saPortalQuestionStatus(saPortalPsrCompleto(row)?'PSR já preenchido para esta data. Você pode atualizar sua resposta.':'Ainda não preenchido nesta data.') }<div class="sa-portal-questions">${saPortalPsrQuestion('sono','Qualidade do sono','1 = muito ruim · 5 = excelente',p.sono)}${saPortalPsrQuestion('fadiga','Fadiga','1 = nenhuma · 5 = muito alta',p.fadiga)}${saPortalPsrQuestion('dor_muscular','Dor muscular','1 = nenhuma · 5 = muito alta',p.dor_muscular)}${saPortalPsrQuestion('estresse_mental','Estresse mental','1 = nenhum · 5 = muito alto',p.estresse_mental)}${saPortalPsrQuestion('motivacao','Motivação','1 = muito baixa · 5 = muito alta',p.motivacao)}</div><label class="sa-portal-text-label">Observação sobre dor ou desconforto (opcional)<textarea id="sa-portal-psr-note" maxlength="1000" placeholder="Se quiser, descreva onde sente desconforto...">${saPortalEsc(p.dor_descricao||'')}</textarea></label><button type="button" class="sa-portal-primary" onclick="saPortalSalvarPsr()" ${saPortalState.saving?'disabled':''}>${saPortalState.saving?'Salvando…':'Salvar PSR neste dispositivo'}</button><p class="sa-portal-footnote">A resposta aparece no relatório PSR e no histórico de monitoramento do SA.</p></section>`;
+ const row=saPortalRespostaDoDia(saPortalState.data),p=saPortalRascunho('psr',saPortalState.data)||saPortalJson(row?.psr);
+ return `<section class="sa-portal-form-card"><div class="sa-portal-form-head"><div><span class="sa-portal-eyebrow">RECUPERAÇÃO DIÁRIA</span><h1>Questionário PSR</h1><p>Como você está se sentindo hoje? Use a escala de 1 a 5.</p></div><label>Data<input type="date" value="${saPortalEsc(saPortalState.data)}" max="${saPortalHojeISO()}" ${saPortalState.saving?'disabled':''} onchange="saPortalSetDate(this.value)"></label></div>${saPortalQuestionStatus(saPortalPsrCompleto(row)?'PSR já preenchido para esta data.':'Ainda não preenchido nesta data.') }${saPortalQuestionStatus(saPortalEstadoCalendario('psr'))}<button type="button" class="sa-portal-refresh" ${saPortalState.saving?'disabled':''} onclick="saPortalReverCalendario()">Atualizar calendário</button><fieldset style="border:0;padding:0;margin:0;min-width:0" ${saPortalState.saving?'disabled':''}><div class="sa-portal-questions">${saPortalPsrQuestion('sono','Qualidade do sono','1 = muito ruim · 5 = excelente',p.sono)}${saPortalPsrQuestion('fadiga','Fadiga','1 = nenhuma · 5 = muito alta',p.fadiga)}${saPortalPsrQuestion('dor_muscular','Dor muscular','1 = nenhuma · 5 = muito alta',p.dor_muscular)}${saPortalPsrQuestion('estresse_mental','Estresse mental','1 = nenhum · 5 = muito alto',p.estresse_mental)}${saPortalPsrQuestion('motivacao','Motivação','1 = muito baixa · 5 = muito alta',p.motivacao)}</div><label class="sa-portal-text-label">Observação sobre dor ou desconforto (opcional)<textarea id="sa-portal-psr-note" maxlength="1000" placeholder="Se quiser, descreva onde sente desconforto...">${saPortalEsc(p.dor_descricao||'')}</textarea></label></fieldset><button type="button" class="sa-portal-primary" onclick="saPortalSalvarPsr()" ${saPortalState.saving||!saPortalEstadoPermite('psr')?'disabled':''}>${saPortalState.saving?'Salvando…':'Salvar PSR neste dispositivo'}</button><p class="sa-portal-footnote">A resposta aparece no relatório PSR e no histórico de monitoramento do SA.</p></section>`;
 }
 function saPortalQuestionStatus(text){return `<div class="sa-portal-status">${saPortalEsc(text)}</div>`;}
 function saPortalRenderPse(){
- const row=saPortalRespostaDoDia(saPortalState.data),p=saPortalJson(row?.pse),pseExistente=saPortalPseValue(row),value=p.valor===undefined?(pseExistente===null?'':String(pseExistente)):String(p.valor),duration=p.duracao_minutos===undefined?(value==='0'?'0':'120'):String(p.duracao_minutos);
+ const row=saPortalRespostaDoDia(saPortalState.data),p=saPortalRascunho('pse',saPortalState.data)||saPortalJson(row?.pse),pseExistente=saPortalPseValue(row),value=p.valor===undefined?(pseExistente===null?'':String(pseExistente)):String(p.valor),duration=p.duracao_minutos===undefined?(value==='0'?'0':'120'):String(p.duracao_minutos);
  const options=[0,1,2,3,4,5,6,7,8,9,10].map(n=>`<label class="sa-portal-pse-option"><input type="radio" name="sa-portal-pse-value" value="${n}" ${value===String(n)?'checked':''}><span>${n}</span></label>`).join('');
  const saved=value!=='';
- return `<section class="sa-portal-form-card"><div class="sa-portal-form-head"><div><span class="sa-portal-eyebrow">ESFORÇO DA SESSÃO</span><h1>Questionário PSE</h1><p>Registre a percepção de esforço após o treino ou jogo.</p></div><label>Data<input type="date" value="${saPortalEsc(saPortalState.data)}" max="${saPortalHojeISO()}" onchange="saPortalSetDate(this.value)"></label></div>${saPortalQuestionStatus(saved?'PSE já preenchido para esta data. Você pode atualizar sua resposta.':'Ainda não preenchido nesta data.')}<fieldset class="sa-portal-question"><legend>Qual foi o esforço percebido?</legend><div class="sa-portal-pse-scale">${options}</div><div class="sa-portal-scale-captions"><span>0 = repouso / sem treino</span><span>10 = esforço máximo</span></div></fieldset><div class="sa-portal-pse-extra"><label>Duração da sessão (minutos)<input id="sa-portal-pse-duration" type="number" min="0" max="300" step="5" value="${saPortalEsc(duration)}"></label><label>Observação (opcional)<input id="sa-portal-pse-note" type="text" maxlength="300" value="${saPortalEsc(p.descricao||'')}" placeholder="Como foi o treino?"></label></div><button type="button" class="sa-portal-primary" onclick="saPortalSalvarPse()" ${saPortalState.saving?'disabled':''}>${saPortalState.saving?'Salvando…':'Salvar PSE neste dispositivo'}</button><p class="sa-portal-footnote">O PSE e a duração alimentam o Monitoramento de Carga local (carga da sessão = PSE × minutos).</p></section>`;
+ return `<section class="sa-portal-form-card"><div class="sa-portal-form-head"><div><span class="sa-portal-eyebrow">ESFORÇO DA SESSÃO</span><h1>Questionário PSE</h1><p>Registre a percepção de esforço após o treino ou jogo.</p></div><label>Data<input type="date" value="${saPortalEsc(saPortalState.data)}" max="${saPortalHojeISO()}" ${saPortalState.saving?'disabled':''} onchange="saPortalSetDate(this.value)"></label></div>${saPortalQuestionStatus(saPortalPseValue(row)!==null?'PSE já preenchido para esta data.':'Ainda não preenchido nesta data.')}${saPortalQuestionStatus(saPortalEstadoCalendario('pse'))}<button type="button" class="sa-portal-refresh" ${saPortalState.saving?'disabled':''} onclick="saPortalReverCalendario()">Atualizar calendário</button><fieldset style="border:0;padding:0;margin:0;min-width:0" ${saPortalState.saving?'disabled':''}><fieldset class="sa-portal-question"><legend>Qual foi o esforço percebido?</legend><div class="sa-portal-pse-scale">${options}</div><div class="sa-portal-scale-captions"><span>0 = repouso / sem treino</span><span>10 = esforço máximo</span></div></fieldset><div class="sa-portal-pse-extra"><label>Duração da sessão (minutos)<input id="sa-portal-pse-duration" type="number" min="0" max="300" step="5" value="${saPortalEsc(duration)}"></label><label>Observação (opcional)<input id="sa-portal-pse-note" type="text" maxlength="300" value="${saPortalEsc(p.descricao||'')}" placeholder="Como foi o treino?"></label></div></fieldset><button type="button" class="sa-portal-primary" onclick="saPortalSalvarPse()" ${saPortalState.saving||!saPortalEstadoPermite('pse')?'disabled':''}>${saPortalState.saving?'Salvando…':'Salvar PSE neste dispositivo'}</button><p class="sa-portal-footnote">O PSE e a duração alimentam o Monitoramento de Carga local (carga da sessão = PSE × minutos).</p></section>`;
 }
 function saPortalPrepStatus(r){
  if(!String(r.resposta||'').trim())return {label:'Aguardando resposta',klass:'pending'};
@@ -6190,15 +6745,19 @@ function saPortalRenderPreparacao(){
 function saPortalRender(){
  const modal=document.getElementById('sa-portal-atleta-modal');if(!modal)return;
  if(!saPortalState.athlete){saPortalRenderLogin();return;}
- const views={inicio:saPortalRenderInicio,psr:saPortalRenderPsr,pse:saPortalRenderPse,preparacao:saPortalRenderPreparacao};
+ const views={inicio:saPortalRenderInicio,psr:saPortalRenderPsr,pse:saPortalRenderPse,trabalhos:saPortalRenderTrabalhos,planejamento:saPortalRenderPlanejamento,preparacao:saPortalRenderPreparacao};
  const body=saPortalState.loading?'<div class="sa-portal-empty"><strong>Carregando seus dados locais…</strong></div>':(views[saPortalState.view]||saPortalRenderInicio)();
  modal.innerHTML=`<div class="sa-portal-shell">${saPortalRenderHeader()}<main class="sa-portal-content" id="sa-portal-content">${body}</main></div>`;
 }
 async function saPortalSalvarResposta(tipo,obj){
  if(saPortalState.saving||!saPortalState.athlete)return false;
  const date=saPortalDateISO(saPortalState.data);if(!date){alert('Selecione uma data válida.');return false;}
+ const athlete=saPortalState.athlete;saPortalState.rascunhos=saPortalState.rascunhos||{};saPortalState.rascunhos[tipo+'|'+date]=saLocalClone(obj);
  saPortalState.saving=true;saPortalRender();
  try{
+  const liberacao=await saPortalConsultarCalendario(athlete,date);
+  if(saPortalState.athlete!==athlete||saPortalState.data!==date)return false;
+  saPortalState.calendario=liberacao;if(!liberacao[tipo])throw new Error(liberacao[tipo+'Motivo']||'Questionário não liberado.');
   const {data:rows,error:readError}=await _saData.from(SA_PORTAL_RESPOSTAS_TABELA).select('*').eq('data',date);
   if(readError)throw readError;
   const existing=(rows||[]).find(r=>saPortalRegistroDoAtleta(r,saPortalState.athlete.id))||null;
@@ -6209,9 +6768,9 @@ async function saPortalSalvarResposta(tipo,obj){
    :await _saData.from(SA_PORTAL_RESPOSTAS_TABELA).insert(payload);
   if(result.error)throw result.error;
   if(typeof rppRespCache!=='undefined')rppRespCache={inicio:'',fim:'',rows:[]};
-  saPortalState.saving=false;saPortalState.view='inicio';await saPortalCarregarDados();
+  delete saPortalState.rascunhos[tipo+'|'+date];saPortalState.saving=false;saPortalState.view='inicio';await saPortalCarregarDados();
   return true;
- }catch(error){console.error('Falha ao salvar resposta do portal local:',error);alert('Não foi possível salvar a resposta neste dispositivo. Confira o espaço disponível e tente novamente.');return false;}
+ }catch(error){console.error('Falha ao salvar resposta do portal local:',error);alert('Não foi possível salvar a resposta. '+(error?.message||'Confira o armazenamento e o calendário.')+' O preenchimento foi mantido nesta tela.');return false;}
  finally{saPortalState.saving=false;saPortalRender();}
 }
 async function saPortalSalvarPsr(){
@@ -6274,10 +6833,10 @@ function saLocalPseInfo(row){
 }
 function saLocalBuildMonitoramentoRows(rows){
  const groups=new Map();
- (rows||[]).forEach(row=>{
+ (rows||[]).forEach((row,indice)=>{
   const data=saPortalDateISO(row.data),nome=String(row.nome_completo||row.nomeCompleto||'').trim();if(!data||!nome)return;
   const nasc=String(row.nascimento||row.data_nascimento||'');
-  const key=saPortalAtletaKey({nomeCompleto:nome,nascimento:nasc,ano:row.ano})||`${saPortalNorm(nome)}||${saPortalBirthYear(nasc||row.ano)}`;
+  const key=saIdentChave({nomeCompleto:nome,nascimento:nasc})||`sem-identidade-completa:${indice}`;
   let item=groups.get(key);if(!item){item={key,nome_completo:nome,apelido:String(row.apelido||''),nascimento:nasc,ano:String(row.ano||saPortalBirthYear(nasc)||''),rows:[]};groups.set(key,item);}
   item.rows.push({...row,data,psr_total:saLocalPsrTotal(row),pse_info:saLocalPseInfo(row)});
  });
@@ -6583,7 +7142,7 @@ function renderCalendarioTreino(){
  for(let i=0;i<start;i++)cells.push('<div class="cal-treino-empty"></div>');
  for(let day=1;day<=days;day++){
   const d=new Date(ano,mes,day),iso=calTreinoISO(d),wk=[0,6].includes(d.getDay()),nPSR=CAL_TREINO_CATS.filter(c=>calTreinoTem(iso,c.id,'psr')).length,nPSE=CAL_TREINO_CATS.filter(c=>calTreinoTem(iso,c.id,'pse')).length,nJogo=CAL_TREINO_CATS.filter(c=>calTreinoJogoAtivo(iso,c.id)).length;
-  cells.push(`<button type="button" class="cal-treino-day${calTreinoState.sel===iso?' sel':''}${iso===hoje?' hoje':''}${wk?' wk':''}${calTreinoState.ready&&(nPSR||nPSE||nJogo)?' ok':''}${nJogo?' has-game':''}" data-cal-data="${iso}" onclick="calTreinoSel('${iso}')"><b>${day}</b><i>PSR ${calTreinoState.ready?nPSR+'/4':'—'}</i><i>PSE ${calTreinoState.ready?nPSE+'/4':'—'}</i><i>Jogo ${calTreinoState.gameReady?nJogo+'/4':'—'}</i></button>`);
+  cells.push(`<button type="button" class="cal-treino-day${calTreinoState.sel===iso?' sel':''}${iso===hoje?' hoje':''}${wk?' wk':''}${calTreinoState.ready&&(nPSR||nPSE||nJogo)?' ok':''}${nJogo?' has-game':''}" data-cal-data="${iso}" onclick="calTreinoSel('${iso}')"><b>${day}</b><i>PSR ${calTreinoState.ready?nPSR+'/'+CAL_TREINO_CATS.length:'—'}</i><i>PSE ${calTreinoState.ready?nPSE+'/'+CAL_TREINO_CATS.length:'—'}</i><i>Jogo ${calTreinoState.gameReady?nJogo+'/'+CAL_TREINO_CATS.length:'—'}</i></button>`);
  }
  const disabled=!calTreinoState.ready||calTreinoState.carregando||calTreinoState.salvando,gameDisabled=!calTreinoState.gameReady||calTreinoState.carregando||calTreinoState.salvando;
  const checks=CAL_TREINO_CATS.map(c=>{
@@ -6595,6 +7154,7 @@ function renderCalendarioTreino(){
 }
 
 let monitorCargaState = { lista: [], carregando: false, data: '', ano: 'todos', zona: 'todas', busca: '', somenteAlertas: false, regraOuro: false };
+let mcFiltroDataInicializado=false,mcRequest=0;
 
 function mcEscape(valor){return typeof escapeHtmlJogos==='function'?escapeHtmlJogos(valor):String(valor??'').replace(/[&<>"']/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[s]));}
 function mcNorm(valor){return String(valor||'').trim().replace(/\s+/g,' ');}
@@ -6602,7 +7162,7 @@ function mcBR(valor){if(!valor)return '';const s=String(valor).slice(0,10);const
 function mcNum(valor,dig=0){if(valor===null||valor===undefined||valor==='')return '—';const n=Number(valor);if(Number.isNaN(n))return '—';return dig>0?n.toFixed(dig).replace('.',','):String(Math.round(n));}
 function mcParseAlertas(valor){if(Array.isArray(valor))return valor.filter(Boolean);if(typeof valor==='string'){try{const arr=JSON.parse(valor);return Array.isArray(arr)?arr.filter(Boolean):[];}catch(e){return valor? [valor]:[];}}return [];}
 function mcValorFlex(row,termos){const chave=Object.keys(row||{}).find(k=>termos.some(t=>String(k).toLowerCase().includes(String(t).toLowerCase())));return chave?row[chave]:'';}
-function mcAtletaBase(row){return (excelData||[]).find(r=>AE.key(aeIdRow(r))===AE.key(row))||null;}
+function mcAtletaBase(row){const k=saIdentChave(row);if(!k)return null;const found=(excelData||[]).filter(r=>saIdentChave(aeIdRow(r))===k);return found.length===1?found[0]:null;}
 function mcApelido(row){const base=mcAtletaBase(row);return base?(mcNorm(mcValorFlex(base,['apelido'])||valorColunaExata(base,'APELIDO'))||row.nome_completo):(mcNorm(row.apelido)||row.nome_completo);}
 function mcAno(row){const base=mcAtletaBase(row);return AE.ano(base?aeIdRow(base):{...row,ano:String(row?.ano||'')},'monitoramento');}
 function mcTemAlerta(row){
@@ -6616,8 +7176,8 @@ function mcDadosFiltrados(){
  if(monitorCargaState.zona!=='todas')dados=dados.filter(r=>String(r.zona_cor||'sem')===monitorCargaState.zona);
  if(monitorCargaState.somenteAlertas)dados=dados.filter(mcTemAlerta);
  if(monitorCargaState.regraOuro)dados=dados.filter(r=>!!r.regra_ouro_ajustar);
- const busca=mcNorm(monitorCargaState.busca).toLowerCase();
- if(busca)dados=dados.filter(r=>`${mcApelido(r)} ${r.nome_completo||''} ${mcAno(r)}`.toLowerCase().includes(busca));
+ const busca=saPortalNorm(monitorCargaState.busca);
+ if(busca)dados=dados.filter(r=>saPortalNorm(`${mcApelido(r)} ${r.nome_completo||''} ${mcAno(r)}`).includes(busca));
  return dados.sort((a,b)=>String(b.data).localeCompare(String(a.data))||String(mcApelido(a)).localeCompare(String(mcApelido(b)),'pt-BR'));
 }
 function mcAnosDisponiveis(){return [...new Set([...aeAnosDestino(),...(excelData||[]).map(r=>AE.ano(aeIdRow(r),'monitoramento'))])].filter(Boolean).sort();}
@@ -6636,11 +7196,11 @@ function renderMonitoramentoCargaTabela(dados){
  return `<div class="mc-table-wrap"><table class="mc-table"><thead><tr><th>Atleta</th><th>Data</th><th>PSE</th><th>PSR</th><th>Carga</th><th>CA 7</th><th>CC 28</th><th>ACWR</th><th>Zona</th><th>Recuperação</th><th>Variação</th><th>Alertas</th></tr></thead><tbody>${dados.map(r=>`<tr class="${r.regra_ouro_ajustar?'mc-regra':''}"><td class="mc-atleta"><b>${mcEscape(mcApelido(r))}</b><small>${mcEscape(r.nome_completo||'')} ${mcAnoReal(r)?'• '+mcEscape(mcAnoReal(r)):''}</small></td><td>${mcBR(r.data)}</td><td>${mcNum(r.pse_valor)}</td><td>${mcNum(r.psr_total)}</td><td>${mcNum(r.carga_sessao)}</td><td>${mcNum(r.carga_aguda)}</td><td>${mcNum(r.carga_cronica,1)}</td><td>${mcNum(r.acwr,2)}</td><td><span class="mc-zona ${mcEscape(r.zona_cor||'sem')}">${mcEscape(mcZonaLabel(r))}</span></td><td>${mcEscape(r.classificacao_recuperacao||'—')}</td><td>${r.perc_variacao!==null&&r.perc_variacao!==undefined?mcNum(r.perc_variacao,1)+'%':'—'}</td><td class="mc-alertas">${mcAlertasHTML(r)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 function renderMonitoramentoCargaModal(){
- const modal=document.getElementById('monitoramento-carga-modal');if(!modal)return;
+ const modal=document.getElementById('monitoramento-carga-modal');if(!modal||modal.style.display==='none')return;
  const logo=saSiteEscape(saSiteCurrentLogoSrc());
  const dados=mcDadosFiltrados();const res=mcResumo(dados);const anos=mcAnosDisponiveis();
  const datas=[...new Set((monitorCargaState.lista||[]).map(r=>String(r.data).slice(0,10)).filter(Boolean))].sort().reverse();
- const html=`<div class="mc-card"><button class="mc-close" onclick="closeMonitoramentoCargaModal()">×</button><div class="mc-head"><img src="${logo}"><div><h2>Monitoramento de Carga</h2><p>PSR × PSE • carga da sessão = PSE × duração</p></div></div><div class="mc-filtros"><label>Data <input type="date" value="${mcEscape(monitorCargaState.data)}" onchange="setMonitorCargaFiltro('data',this.value)"></label><button onclick="setMonitorCargaFiltro('data','')">Todas datas</button><select onchange="setMonitorCargaFiltro('ano',this.value)"><option value="todos">Todos os anos</option>${anos.map(a=>`<option value="${mcEscape(a)}" ${monitorCargaState.ano===a?'selected':''}>${mcEscape(a)}</option>`).join('')}</select><select onchange="setMonitorCargaFiltro('zona',this.value)"><option value="todas">Todas as zonas</option><option value="azul" ${monitorCargaState.zona==='azul'?'selected':''}>Azul - baixa</option><option value="verde" ${monitorCargaState.zona==='verde'?'selected':''}>Verde - normal</option><option value="amarelo" ${monitorCargaState.zona==='amarelo'?'selected':''}>Amarelo - atenção</option><option value="vermelho" ${monitorCargaState.zona==='vermelho'?'selected':''}>Vermelho - sobrecarga</option><option value="sem" ${monitorCargaState.zona==='sem'?'selected':''}>Histórico insuficiente</option></select><input class="mc-busca" placeholder="Buscar atleta..." value="${mcEscape(monitorCargaState.busca)}" oninput="setMonitorCargaFiltro('busca',this.value)"><label class="mc-check"><input type="checkbox" ${monitorCargaState.somenteAlertas?'checked':''} onchange="setMonitorCargaFiltro('somenteAlertas',this.checked)"> Alertas</label><label class="mc-check"><input type="checkbox" ${monitorCargaState.regraOuro?'checked':''} onchange="setMonitorCargaFiltro('regraOuro',this.checked)"> Regra ouro</label><button class="mc-refresh" onclick="carregarMonitoramentoCarga()">Atualizar</button><button onclick="imprimirMonitoramentoCarga()">Imprimir/PDF</button></div><div class="mc-summary"><div><b>${res.total}</b><span>Registros</span></div><div class="ouro"><b>${res.ouro}</b><span>Regra ouro</span></div><div class="red"><b>${res.vermelho}</b><span>Sobrecarga</span></div><div class="yellow"><b>${res.amarelo}</b><span>Atenção</span></div><div><b>${res.alertas}</b><span>Com alertas</span></div></div><div id="mc-print-area"><p class="mc-note">CA 7 aparece após 7 sessões válidas; a variação compara as últimas 7 com as 7 anteriores; CC 28 e ACWR aparecem após 28 sessões. Zonas são indicadores locais, não diagnóstico ou prescrição.</p>${monitorCargaState.carregando?'<div class="mc-loading">Carregando dados...</div>':renderMonitoramentoCargaTabela(dados)}</div></div>`;
+ const html=`<div class="mc-card"><button class="mc-close" onclick="closeMonitoramentoCargaModal()">×</button><div class="mc-head"><img src="${logo}"><div><h2>Monitoramento de Carga</h2><p>PSR × PSE • carga da sessão = PSE × duração</p></div></div><div class="mc-filtros"><label>Data <input type="date" value="${mcEscape(monitorCargaState.data)}" onchange="setMonitorCargaFiltro('data',this.value)"></label><button onclick="setMonitorCargaFiltro('data','')">Todas datas</button><select onchange="setMonitorCargaFiltro('ano',this.value)"><option value="todos">Todos os anos</option>${anos.map(a=>`<option value="${mcEscape(a)}" ${monitorCargaState.ano===a?'selected':''}>${mcEscape(a)}</option>`).join('')}</select><select onchange="setMonitorCargaFiltro('zona',this.value)"><option value="todas">Todas as zonas</option><option value="azul" ${monitorCargaState.zona==='azul'?'selected':''}>Azul - baixa</option><option value="verde" ${monitorCargaState.zona==='verde'?'selected':''}>Verde - normal</option><option value="amarelo" ${monitorCargaState.zona==='amarelo'?'selected':''}>Amarelo - atenção</option><option value="vermelho" ${monitorCargaState.zona==='vermelho'?'selected':''}>Vermelho - sobrecarga</option><option value="sem" ${monitorCargaState.zona==='sem'?'selected':''}>Histórico insuficiente</option></select><input class="mc-busca" placeholder="Buscar atleta..." value="${mcEscape(monitorCargaState.busca)}" oninput="setMonitorCargaFiltro('busca',this.value)"><label class="mc-check"><input type="checkbox" ${monitorCargaState.somenteAlertas?'checked':''} onchange="setMonitorCargaFiltro('somenteAlertas',this.checked)"> Alertas</label><label class="mc-check"><input type="checkbox" ${monitorCargaState.regraOuro?'checked':''} onchange="setMonitorCargaFiltro('regraOuro',this.checked)"> Regra ouro</label><button class="mc-refresh" onclick="carregarMonitoramentoCarga()">Atualizar</button><button onclick="imprimirMonitoramentoCarga()">Exportar PDF</button></div><div class="mc-summary"><div><b>${res.total}</b><span>Registros</span></div><div class="ouro"><b>${res.ouro}</b><span>Regra ouro</span></div><div class="red"><b>${res.vermelho}</b><span>Sobrecarga</span></div><div class="yellow"><b>${res.amarelo}</b><span>Atenção</span></div><div><b>${res.alertas}</b><span>Com alertas</span></div></div><div id="mc-print-area"><p class="mc-note">CA 7 aparece após 7 sessões válidas; a variação compara as últimas 7 com as 7 anteriores; CC 28 e ACWR aparecem após 28 sessões. Zonas são indicadores locais, não diagnóstico ou prescrição.</p>${monitorCargaState.carregando?'<div class="mc-loading">Carregando dados...</div>':renderMonitoramentoCargaTabela(dados)}</div></div>`;
  const busca=modal.querySelector('.mc-busca');
  if(busca && document.activeElement===busca && modal.querySelector('.mc-summary') && modal.querySelector('#mc-print-area')){
   const template=document.createElement('template');template.innerHTML=html;
@@ -6655,22 +7215,23 @@ async function openMonitoramentoCargaModal(){
  if(!modal){modal=document.createElement('div');modal.id='monitoramento-carga-modal';modal.className='mc-overlay';document.body.appendChild(modal);modal.addEventListener('click',e=>{if(e.target===modal)closeMonitoramentoCargaModal();});}
  modal.style.display='flex';renderMonitoramentoCargaModal();await carregarMonitoramentoCarga();
 }
-function closeMonitoramentoCargaModal(){const modal=document.getElementById('monitoramento-carga-modal');if(modal)modal.style.display='none';}
-function setMonitorCargaFiltro(campo,valor){monitorCargaState[campo]=valor;renderMonitoramentoCargaModal();}
+function closeMonitoramentoCargaModal(){++mcRequest;monitorCargaState.carregando=false;const modal=document.getElementById('monitoramento-carga-modal');if(modal)modal.style.display='none';}
+function setMonitorCargaFiltro(campo,valor){if(campo==='data')mcFiltroDataInicializado=true;monitorCargaState[campo]=valor;renderMonitoramentoCargaModal();}
 async function carregarMonitoramentoCarga(){
- monitorCargaState.carregando=true;renderMonitoramentoCargaModal();
+ const request=++mcRequest;monitorCargaState.carregando=true;renderMonitoramentoCargaModal();
  try{
   const {data,error}=await _saData.from(SA_PORTAL_RESPOSTAS_TABELA).select('*').order('data',{ascending:false}).limit(20000);
-  if(error)throw error;
+  if(error)throw error;if(request!==mcRequest)return;
   monitorCargaState.lista=saLocalBuildMonitoramentoRows(data||[]);
-  if(!monitorCargaState.data&&monitorCargaState.lista.length)monitorCargaState.data=String(monitorCargaState.lista[0].data).slice(0,10);
- }catch(e){console.error(e);alert('Erro ao carregar as respostas locais de PSR/PSE para o Monitoramento de Carga.');monitorCargaState.lista=[];}
- finally{monitorCargaState.carregando=false;renderMonitoramentoCargaModal();}
+  if(!mcFiltroDataInicializado&&monitorCargaState.lista.length){monitorCargaState.data=String(monitorCargaState.lista[0].data).slice(0,10);mcFiltroDataInicializado=true;}
+ }catch(e){if(request!==mcRequest)return;console.error(e);alert('Erro ao carregar as respostas locais de PSR/PSE para o Monitoramento de Carga.');monitorCargaState.lista=[];}
+ finally{if(request===mcRequest){monitorCargaState.carregando=false;renderMonitoramentoCargaModal();}}
 }
 function imprimirMonitoramentoCarga(){
  const area=document.getElementById('mc-print-area');if(!area)return;
  const logo=saSiteEscape(saSiteCurrentLogoSrc());
- const w=window.open('','_blank','width=1200,height=850');
+ const w=saOpenPrintWindow('_blank', 'width=1200,height=850', true);
+ if(!w){alert('Não foi possível abrir a impressão. Permita pop-ups e tente novamente.');return;}
  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Monitoramento de Carga</title><style>body{font-family:Arial,sans-serif;margin:12px}.mc-print-head{display:flex;align-items:center;justify-content:center;gap:12px;margin:0 0 12px}.mc-print-head img{width:54px;height:54px;object-fit:contain}.mc-print-head h2{margin:0;text-align:center;color:#173b59}.mc-note{font-size:11px;color:#555}.mc-table{width:100%;border-collapse:collapse;font-size:10px}.mc-table th{background:#173b59;color:#40b8a8}.mc-table th,.mc-table td{border:1px solid #999;padding:4px;text-align:center}.mc-atleta{text-align:left!important}.mc-atleta b{display:block}.mc-atleta small{display:block;color:#555}.mc-zona{border-radius:8px;padding:3px 6px;font-weight:bold}.mc-zona.azul{background:#dbeafe}.mc-zona.verde{background:#dcfce7}.mc-zona.amarelo{background:#fef3c7}.mc-zona.vermelho{background:#fee2e2}.mc-alertas span{display:block}.mc-regra{background:#fff1f2}@page{size:landscape;margin:8mm}</style></head><body><header class="mc-print-head"><img src="${logo}" alt="Logo da equipe"><h2>Monitoramento de Carga - VBolonheze Sports</h2></header>${area.outerHTML}<script>window.onload=()=>setTimeout(()=>window.print(),350)<\/script></body></html>`);
  w.document.close();
 }
@@ -6768,23 +7329,11 @@ function rppAtletasRelatorio(){
 }
 function rppRespostaAtletaData(atleta,dataISO){
  const nome=normalizarTextoTrabalho(atleta?.id?.nomeCompleto||'');
- const nasc=rppNormNasc(atleta?.id?.nascimento||'');
- const alvo=rppIsoData(dataISO);
+ const nascimento=saIdentData(atleta?.id?.nascimento||'');const alvo=rppIsoData(dataISO);
+ if(!nome||!nascimento||!alvo)return null;
  const idx=relatorioPsrPseState.respIdx;
- if(idx && idx.size){
-  if(nasc && idx.has(alvo+'|'+nome+'|'+nasc)) return idx.get(alvo+'|'+nome+'|'+nasc);
-  if(idx.has(alvo+'|'+nome)) return idx.get(alvo+'|'+nome);
-  return null;
- }
- return (relatorioPsrPseState.respostas||[]).find(r=>{
-  const rn=normalizarTextoTrabalho(r.nome_completo||r.nomeCompleto||'');
-  const rnas=rppNormNasc(r.nascimento||r.data_nascimento||'');
-  const rd=rppIsoData(r.data);
-  if(rd!==alvo) return false;
-  if(rn!==nome) return false;
-  if(nasc && rnas && nasc!==rnas) return false;
-  return true;
- })||null;
+ if(idx instanceof Map)return idx.get(alvo+'|'+saIdentNome(nome)+'|'+nascimento)||null;
+ return (relatorioPsrPseState.respostas||[]).find(r=>rppIsoData(r.data)===alvo&&saIdentChave(r)===saIdentChave(atleta.id))||null;
 }
 function rppObjResposta(row,tipo=relatorioPsrPseState.tipo){const obj=row&&row[tipo];if(obj&&typeof obj==='object')return obj;if(tipo==='pse'&&obj!==undefined&&obj!==null&&obj!=='')return {valor:obj};return {};}
 function rppRespondido(row,tipo=relatorioPsrPseState.tipo){
@@ -7398,21 +7947,13 @@ function renderRelatorioPsrPse(){
  const cats=rppCats();const atletas=rppAtletasRelatorio();
  const tabela=relatorioPsrPseState.carregando?'<div class="rpp-loading">Carregando respostas...</div>':(relatorioPsrPseState.view==='medias'?rppRenderMedias():(relatorioPsrPseState.view==='notas'?rppRenderTabelaNotas(atletas):rppRenderTabelaResumo(atletas)));
  const dataBR=rppBR(relatorioPsrPseState.data,true);
- modal.innerHTML=`<div class="rpp-card"><button class="rpp-close" onclick="closeRelatorioPsrPse()">×</button><div class="rpp-head"><div class="rpp-extra-box"><div class="rpp-extra-chips">${rppRenderExtrasChips()}</div></div><div class="rpp-title"><h2>${relatorioPsrPseState.tipo.toUpperCase()}</h2><strong>${dataBR}</strong><small>${rppTituloView()}</small></div><div class="rpp-cat-box">${Object.keys(cats).map(id=>`<label><input type="checkbox" ${relatorioPsrPseState.categorias[id]?'checked':''} onchange="toggleRelatorioPsrPseCategoria('${id}',this.checked)"> ${rppEscape(cats[id].label)}</label>`).join('')}</div></div><div class="rpp-toolbar"><label>Dia <input type="date" value="${relatorioPsrPseState.data}" onchange="setRelatorioPsrPseData(this.value)"></label><button type="button" class="${relatorioPsrPseState.view==='notas'?'active':''}" onclick="setRelatorioPsrPseView('notas')">Notas do dia</button><button type="button" class="${relatorioPsrPseState.view==='diario'?'active':''}" onclick="setRelatorioPsrPseView('diario')">Relatório diário</button><button type="button" class="${relatorioPsrPseState.view==='semanal'?'active':''}" onclick="setRelatorioPsrPseView('semanal')">Relatório semanal</button><button type="button" class="${relatorioPsrPseState.view==='mensal'?'active':''}" onclick="setRelatorioPsrPseView('mensal')">Relatório mensal</button><button type="button" class="${relatorioPsrPseState.view==='medias'?'active':''}" onclick="setRelatorioPsrPseView('medias')">Médias</button><button type="button" class="print" onclick="imprimirRelatorioPsrPse()"><i class="fa-solid fa-print"></i> Imprimir/Exportar</button></div><div class="rpp-meta${relatorioPsrPseState.view==='medias'?' rpp-no-print':''}"><span>${relatorioPsrPseState.view==='medias'?'Todas as categorias':rppEscape(rppCategoriasTitulo())}</span><span>${relatorioPsrPseState.view==='medias'?'':atletas.length+' atleta(s)'}</span></div><div id="rpp-print-area" class="rpp-print-area"><div class="rpp-print-title"><img src="${logo}"><div><h2>${rppEscape(rppTituloView())}</h2><p>${relatorioPsrPseState.view==='medias'?'Todas as categorias':rppEscape(rppCategoriasTitulo())}</p></div><img src="${logo}"></div>${relatorioPsrPseState.tipo==='pse'?`<div class="rpp-legenda-pse"><span><b>1–2</b> leve</span><span><b>3–4</b> médio</span><span><b>5–6</b> pesado</span><span><b>7</b> esforço máximo</span></div>`:''}<div class="rpp-table-wrap">${tabela}</div></div></div>`;
+ modal.innerHTML=`<div class="rpp-card"><button class="rpp-close" onclick="closeRelatorioPsrPse()">×</button><div class="rpp-head"><div class="rpp-extra-box"><div class="rpp-extra-chips">${rppRenderExtrasChips()}</div></div><div class="rpp-title"><h2>${relatorioPsrPseState.tipo.toUpperCase()}</h2><strong>${dataBR}</strong><small>${rppTituloView()}</small></div><div class="rpp-cat-box">${Object.keys(cats).map(id=>`<label><input type="checkbox" ${relatorioPsrPseState.categorias[id]?'checked':''} onchange="toggleRelatorioPsrPseCategoria('${id}',this.checked)"> ${rppEscape(cats[id].label)}</label>`).join('')}</div></div><div class="rpp-toolbar"><label>Dia <input type="date" value="${relatorioPsrPseState.data}" onchange="setRelatorioPsrPseData(this.value)"></label><button type="button" class="${relatorioPsrPseState.view==='notas'?'active':''}" onclick="setRelatorioPsrPseView('notas')">Notas do dia</button><button type="button" class="${relatorioPsrPseState.view==='diario'?'active':''}" onclick="setRelatorioPsrPseView('diario')">Relatório diário</button><button type="button" class="${relatorioPsrPseState.view==='semanal'?'active':''}" onclick="setRelatorioPsrPseView('semanal')">Relatório semanal</button><button type="button" class="${relatorioPsrPseState.view==='mensal'?'active':''}" onclick="setRelatorioPsrPseView('mensal')">Relatório mensal</button><button type="button" class="${relatorioPsrPseState.view==='medias'?'active':''}" onclick="setRelatorioPsrPseView('medias')">Médias</button><button type="button" class="print" onclick="imprimirRelatorioPsrPse()"><i class="fa-solid fa-print"></i> Exportar PDF</button></div><div class="rpp-meta${relatorioPsrPseState.view==='medias'?' rpp-no-print':''}"><span>${relatorioPsrPseState.view==='medias'?'Todas as categorias':rppEscape(rppCategoriasTitulo())}</span><span>${relatorioPsrPseState.view==='medias'?'':atletas.length+' atleta(s)'}</span></div><div id="rpp-print-area" class="rpp-print-area"><div class="rpp-print-title"><img src="${logo}"><div><h2>${rppEscape(rppTituloView())}</h2><p>${relatorioPsrPseState.view==='medias'?'Todas as categorias':rppEscape(rppCategoriasTitulo())}</p></div><img src="${logo}"></div>${relatorioPsrPseState.tipo==='pse'?`<div class="rpp-legenda-pse"><span><b>1–2</b> leve</span><span><b>3–4</b> médio</span><span><b>5–6</b> pesado</span><span><b>7</b> esforço máximo</span></div>`:''}<div class="rpp-table-wrap">${tabela}</div></div></div>`;
  modal.style.display='flex';
 }
 let rppRespCache={inicio:'',fim:'',rows:[]};
 let rppLoadRequest=0;
 function rppIndexarRespostas(rows){
- const idx=new Map();
- (rows||[]).forEach(function(r){
-  const rd=rppIsoData(r.data);
-  const rn=normalizarTextoTrabalho(r.nome_completo||r.nomeCompleto||'');
-  const rnas=rppNormNasc(r.nascimento||r.data_nascimento||'');
-  const k1=rd+'|'+rn;
-  if(!idx.has(k1)) idx.set(k1,r);
-  if(rnas) idx.set(rd+'|'+rn+'|'+rnas, r);
- });
+ const idx=new Map();(rows||[]).forEach(r=>{const dia=rppIsoData(r.data),chave=saIdentChave(r);if(dia&&chave)idx.set(dia+'|'+chave.replace('||','|'),r);});
  relatorioPsrPseState.respIdx=idx;
 }
 async function rppFetchRespostasPeriodo(inicio,fim){
@@ -7492,7 +8033,8 @@ function removerExtraRelatorioPsrPse(){openAtletasExtras();}
 function imprimirRelatorioPsrPse(){
  const area=document.getElementById('rpp-print-area');if(!area)return;
  const titulo=rppTituloView();const paisagem=relatorioPsrPseState.view==='mensal'||relatorioPsrPseState.view==='semanal'||relatorioPsrPseState.view==='medias';
- const w=window.open('','_blank','width=1200,height=850');
+ const w=saOpenPrintWindow('_blank', 'width=1200,height=850', true);
+ if(!w){alert('Não foi possível abrir a impressão. Permita pop-ups e tente novamente.');return;}
  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${rppEscape(titulo)}</title><style>body{font-family:Arial,Helvetica,sans-serif;margin:12px;color:#111}.rpp-print-title{display:flex!important;align-items:center;justify-content:center;gap:18px;margin-bottom:12px}.rpp-print-title img{width:58px;height:58px;object-fit:contain}.rpp-print-title h2{margin:0;text-align:center;color:#173b59;font-size:22px}.rpp-print-title p{margin:3px 0 0;text-align:center;font-weight:bold}.rpp-table{width:100%;border-collapse:collapse;font-size:11px}.rpp-table th{background:#173b59;color:#40b8a8}.rpp-table th,.rpp-table td{border:1px solid #999;padding:5px;text-align:center}.rpp-table th button{border:0;background:transparent;color:inherit;font:inherit;font-weight:bold}.rpp-table td.rpp-nome{text-align:left;font-weight:bold}.rpp-goleiro-row td{background:#e3f1fc!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.rpp-desc{text-align:left!important}.rpp-v{color:#009b49;font-weight:900;font-size:15px}.rpp-x{color:#d63031;font-weight:900;font-size:15px}.rpp-muted{color:#999}.rpp-table-wrap{overflow:visible}.rpp-no-print,.rpp-med-filtros,.rpp-med-nota{display:none!important}.rpp-med-table,.rpp-med-table-split{min-width:0!important;font-size:14px!important}.rpp-med-table th,.rpp-med-table td{padding:10px 12px!important}.rpp-med-sub-goleiros,.rpp-med-goleiros{background:#e3f1fc!important}.rpp-med-sub-goleiros{color:#1e3a8a!important}.rpp-med-geral-row td{background:#173b59!important;color:#fff!important;font-weight:900}.rpp-med-geral-row td.rpp-med-goleiros{background:#73313a!important}.rpp-med-geral-row td:first-child{color:#40b8a8!important}.rpp-list-report{border:1px solid #d8e8c4;background:#fbfff7;padding:10px}.rpp-list-date{font-size:17px;color:#5c8a2a;font-weight:bold;border-bottom:1px solid #e5eadf;padding:6px}.rpp-list-obs{font-size:13px;margin:8px 0}.rpp-list-cols{display:grid;grid-template-columns:1fr 1fr;gap:24px}.rpp-list-col h3{font-size:14px;margin:6px 0}.rpp-list-col.ok h3,.rpp-list-col.ok li{color:#078c49}.rpp-list-col.no h3,.rpp-list-col.no li{color:#c00000}.rpp-list-col ul{list-style:none;padding:0;margin:0}.rpp-list-col li{font-size:12px;line-height:1.35;margin:2px 0}.rpp-list-col li.empty{color:#777}.rpp-legenda-pse{display:flex;flex-wrap:wrap;justify-content:center;gap:10px 18px;margin:0 0 12px;padding:8px 12px;background:#f6f3ea;border:1px solid #ead9a8;border-radius:8px;font-size:13px}.rpp-legenda-pse b{color:#173b59}@page{size:${paisagem?'landscape':'portrait'};margin:8mm}</style></head><body>${area.outerHTML}<script>window.onload=()=>setTimeout(()=>window.print(),350)<\/script></body></html>`);
  w.document.close();
 }
@@ -7713,7 +8255,7 @@ async function gerarRelatorioFisicoIndividual(){
   relatorioIndividualChartSVG('Velocidade em 30 m',avals,'velocidade','s'),
   relatorioIndividualChartSVG('Circuito de Agilidade',avals,'agilidade','s')
  ].join('');
- const w=window.open('','_blank','width=1150,height=900'); if(!w)return alert('Permita pop-ups para gerar a ficha.');
+ const w=saOpenPrintWindow('_blank', 'width=1150,height=900', true); if(!w)return alert('Permita pop-ups para gerar a ficha.');
  const html=`<!doctype html><html><head><meta charset="utf-8"><title>Ficha Física - ${esc(apelido)}</title><style>
  @page{size:A4 portrait;margin:4mm}
  *{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}
@@ -7775,7 +8317,7 @@ function relatoriosRodapeMedias(state,medias){
  return `<div class="media-cat">Médias da categoria: Peso ${relatoriosFormatoMedia(medias.peso,' kg')} | Altura ${relatoriosFormatoMedia(medias.altura,' m')} | Altura predita ${relatoriosFormatoMedia(medias.predita,' m')} | Gordura ${relatoriosFormatoMedia(medias.gordura,'%')} | Distância ${relatoriosFormatoMedia(medias.distancia,' m')} | Salto ${relatoriosFormatoMedia(medias.melhorSalto,' m')} | Aceleração ${relatoriosFormatoMedia(medias.aceleracao)} | Velocidade ${relatoriosFormatoMedia(medias.velocidade)} | Agilidade ${relatoriosFormatoMedia(medias.agilidade)}</div>`;
 }
 function exportarRelatorioEspecialPDF(state){
- const w=window.open('','_blank','width=1100,height=800');
+ const w=saOpenPrintWindow('_blank', 'width=1100,height=800', true);
  if(!w)return alert('Permita pop-ups para gerar o PDF.');
  const titulo=relatoriosTituloPDF(state);
  const cols=relatoriosColunasPDF(state.tipo);
@@ -7817,6 +8359,7 @@ const pranchetaSistemasMini = {
 let pranchetaMiniContador = 12;
 let tpState = { pieces: [], frames: [], nextId: 1, homeN: 1, awayN: 1, sel: null, selIds: [], kit:null, squadOn:null };
 let tpUndo=[];
+let tpPranchetaInicializada=false;
 
 function tpIsSel(id){
  const a=tpState.selIds||[];
@@ -7850,9 +8393,61 @@ function tpPushUndo(){
 }
 function tpDoUndo(){
  if(!tpUndo.length) return;
- try{ tpState.pieces=JSON.parse(tpUndo.pop()); tpRenderPieces(); }catch(e){}
+ try{ tpState.pieces=JSON.parse(tpUndo.pop()); tpSetSel(null); tpHideCtx(); tpRenderPieces(); }catch(e){}
 }
-function tpNewId(){ return 'p'+(tpState.nextId++); }
+// IDs devem ser únicos também nas telas: elas são usadas para animar as peças.
+function tpAllPieceLists(){
+ return [tpState.pieces||[],...(tpState.frames||[]).map(f=>Array.isArray(f.pieces)?f.pieces:[])];
+}
+function tpSyncNextId(){
+ let next=Number.isSafeInteger(tpState.nextId)&&tpState.nextId>0?tpState.nextId:1;
+ tpAllPieceLists().forEach(list=>list.forEach(p=>{
+  const m=p && typeof p.id==='string' && /^p([1-9]\d*)$/.exec(p.id);
+  const n=m?Number(m[1]):0;
+  if(Number.isSafeInteger(n)&&n<Number.MAX_SAFE_INTEGER-1) next=Math.max(next,n+1);
+ }));
+ tpState.nextId=next;
+}
+function tpNewId(){
+ tpSyncNextId();
+ let id;
+ do { id='p'+(tpState.nextId++); }
+ while(tpAllPieceLists().some(list=>list.some(p=>p&&p.id===id)));
+ return id;
+}
+// Corrige IDs repetidos somente na cópia aberta; o projeto salvo não é alterado.
+// A mesma peça mantém seu ID entre telas para não quebrar a animação.
+function tpNormalizarProjeto(d){
+ const clone=saLocalClone(d||{});
+ const pieces=Array.isArray(clone.pieces)?clone.pieces:[];
+ const frames=Array.isArray(clone.frames)?clone.frames:[];
+ const lists=frames.map(f=>Array.isArray(f?.pieces)?f.pieces:[]).concat([pieces]);
+ const used=new Set(); let next=1;
+ lists.forEach(list=>list.forEach(p=>{if(!p||typeof p!=='object')return;
+  if(typeof p.id==='string'&&p.id) used.add(p.id);
+  const m=typeof p.id==='string'&&/^p([1-9]\d*)$/.exec(p.id), n=m?Number(m[1]):0;
+  if(Number.isSafeInteger(n)&&n<Number.MAX_SAFE_INTEGER-1)next=Math.max(next,n+1);
+ }));
+ const assigned=new Map(), owners=new Set();
+ function fresh(){let id;do{id='p'+next++;}while(used.has(id));used.add(id);return id;}
+ lists.forEach(list=>{
+  const counts=new Map();
+  list.forEach(p=>{
+   if(!p||typeof p!=='object')return;
+   const original=typeof p.id==='string'&&p.id?p.id:'';
+   const group=JSON.stringify([original,String(p.type||'')]);
+   const occurrence=counts.get(group)||0;counts.set(group,occurrence+1);
+   const key=JSON.stringify([original,String(p.type||''),occurrence]);
+   if(!assigned.has(key)){
+    const id=original&&!owners.has(original)?original:fresh();
+    assigned.set(key,id);owners.add(id);
+   }
+   p.id=assigned.get(key);
+  });
+ });
+ clone.pieces=pieces;clone.frames=frames;
+ return clone;
+}
 function tpClonePieces(){ return JSON.parse(JSON.stringify(tpState.pieces)); }
 
 const TP_CONE_SVG = '<svg class="tp-ico" viewBox="0 0 64 72" preserveAspectRatio="none" aria-hidden="true"><ellipse cx="32" cy="64" rx="22" ry="5" fill="#7a3a10" opacity=".45"/><path d="M18 60 L26 14 Q32 8 38 14 L46 60 Z" fill="#f39c12" stroke="#c0392b" stroke-width="1.5"/><path d="M20 52 L44 52 L42.2 42 L21.8 42 Z" fill="#fff"/><path d="M23.2 28 L40.8 28 L39.4 20 L24.6 20 Z" fill="#fff"/><rect x="12" y="58" width="40" height="7" rx="2" fill="#e67e22" stroke="#c0392b" stroke-width="1.2"/></svg>';
@@ -8124,7 +8719,7 @@ function tpDrawGoal(ctx,pw,ph){
 
 function tpFillToken(ctx,r,p,t){
  const isGk=t==='gk-home'||t==='gk-away';
- const c1=p.c1||(t==='home'?'#d63031':t==='away'?'#0984e3':t==='gk-home'?'#40b8a8':'#111');
+ const c1=p.c1||p.color||(t==='home'?'#d63031':t==='away'?'#0984e3':t==='gk-home'?'#40b8a8':'#111');
  const c2=p.c2||'#fff';
  const st=p.kitStyle||'solid';
  ctx.save();
@@ -8444,6 +9039,7 @@ function openPranchetaModal() {
  renderPranchetaVirtual();
 }
 function closePranchetaModal(){
+ tpFecharAddPop(); tpFecharTelasMob(); tpFecharProjUI(); tpHideCtx();
  const modal=document.getElementById('prancheta-modal');if(modal)modal.style.display='none';
  if(typeof modernV3VoltarInicio==='function') modernV3VoltarInicio();
 }
@@ -8486,10 +9082,10 @@ function renderPranchetaVirtual(){
     </div>
     <div id="tp-kit-panel" class="tp-desk-only tp-kit-panel" hidden></div>
     <div id="tp-add-pop" class="tp-add-pop">
-    <button type="button" class="tp-tool home tp-mob-only" onpointerdown="tpToolPointer(event,'home')" onclick="tpToolClick(event,'home')">+ Jogador casa</button>
-    <button type="button" class="tp-tool away tp-mob-only" onpointerdown="tpToolPointer(event,'away')" onclick="tpToolClick(event,'away')">+ Jogador fora</button>
-    <button type="button" class="tp-tool gk-home tp-mob-only" onpointerdown="tpToolPointer(event,'gk-home')" onclick="tpToolClick(event,'gk-home')">+ Goleiro casa</button>
-    <button type="button" class="tp-tool gk-away tp-mob-only" onpointerdown="tpToolPointer(event,'gk-away')" onclick="tpToolClick(event,'gk-away')">+ Goleiro fora</button>
+    <button type="button" class="tp-tool home tp-mob-only" onpointerdown="tpToolPointer(event,'home')" onclick="tpToolClick(event,'home')"><span class="tp-mobile-team-dot" aria-hidden="true"></span>+ Jogador casa</button>
+    <button type="button" class="tp-tool away tp-mob-only" onpointerdown="tpToolPointer(event,'away')" onclick="tpToolClick(event,'away')"><span class="tp-mobile-team-dot" aria-hidden="true"></span>+ Jogador fora</button>
+    <button type="button" class="tp-tool gk-home tp-mob-only" onpointerdown="tpToolPointer(event,'gk-home')" onclick="tpToolClick(event,'gk-home')"><span class="tp-mobile-team-dot" aria-hidden="true"></span>+ Goleiro casa</button>
+    <button type="button" class="tp-tool gk-away tp-mob-only" onpointerdown="tpToolPointer(event,'gk-away')" onclick="tpToolClick(event,'gk-away')"><span class="tp-mobile-team-dot" aria-hidden="true"></span>+ Goleiro fora</button>
     <button type="button" class="tp-tool ball" onpointerdown="tpToolPointer(event,'ball')" onclick="tpToolClick(event,'ball')">+ Bola</button>
     <button type="button" class="tp-tool cone" onpointerdown="tpToolPointer(event,'cone')" onclick="tpToolClick(event,'cone')">+ Cone</button>
     <button type="button" class="tp-tool goal" onpointerdown="tpToolPointer(event,'goal')" onclick="tpToolClick(event,'goal')">+ Trave</button>
@@ -8518,8 +9114,10 @@ function renderPranchetaVirtual(){
  </div>`;
  const sel=document.getElementById('mini-tactical-system');
  if(sel) sel.onchange=resetPrancheta;
- if(!tpState.pieces.length) resetPrancheta();
- else tpRenderPieces();
+ if(!tpPranchetaInicializada){
+  tpPranchetaInicializada=true;
+  if(!tpState.pieces.length) resetPrancheta(); else tpRenderPieces();
+ }else tpRenderPieces();
  tpRenderFrames();
  if(typeof tpKitEnsure==='function'){ tpKitEnsure(); tpPaintKitDiscs(); tpRenderSquad(); }
  const board=document.getElementById('mini-football-board');
@@ -8562,10 +9160,11 @@ function tpFecharAddPop(){
 function resetPrancheta(){
  const sel=document.getElementById('mini-tactical-system');
  const form=sel?sel.value:'4-3-3';
+ if(tpState.pieces.length)tpPushUndo();
  tpState.pieces=[];
  tpState.homeN=1;
  tpState.awayN=1;
- tpState.sel=null;
+ tpSetSel(null); tpHideCtx();
  pranchetaMiniContador=12;
  (pranchetaSistemasMini[form]||[]).forEach(p=>{
   const isGk=p[2]==='G';
@@ -8581,7 +9180,8 @@ function resetPrancheta(){
  tpRenderPieces();
 }
 function clearPrancheta(){
- tpState.pieces=[]; tpState.frames=[]; tpState.sel=null;
+ if(tpState.pieces.length)tpPushUndo();
+ tpState.pieces=[]; tpSetSel(null); tpHideCtx();
  tpState.homeN=1; tpState.awayN=1;
  tpRenderPieces();
  if(typeof tpRenderFrames==='function') tpRenderFrames();
@@ -8630,6 +9230,14 @@ function tpPaintKitDiscs(){
   const k=tpKitOf(t);
   el.style.background=tpTokenBg(k.c1,k.c2,k.style);
  });
+ // A amostra do celular deve acompanhar o uniforme real, não uma cor fixa
+ // que poderia fazer Casa e Fora parecerem trocados.
+ ['home','away','gk-home','gk-away'].forEach(type=>{
+  const dot=document.querySelector('#tp-add-pop .tp-tool.'+type+' .tp-mobile-team-dot');
+  if(!dot)return;
+  const team=type.endsWith('away')?'away':'home', gk=type.startsWith('gk-'), k=tpKitOf(team);
+  dot.style.background=gk?tpTokenBg(k.gkC1,k.gkC2,'solid'):tpTokenBg(k.c1,k.c2,k.style);
+ });
 }
 function tpApplyKitToPiece(piece){
  tpKitEnsure();
@@ -8654,7 +9262,7 @@ function tpPlayerText(value){
 function tpPlayerTokenHtml(p){
  const isP=['home','away','gk-home','gk-away'].indexOf(p.type)>=0;
  if(!isP) return '';
- const c1=p.c1||(p.type==='away'?'#0984e3':p.type==='gk-home'?'#40b8a8':p.type==='gk-away'?'#111':'#d63031');
+ const c1=p.c1||p.color||(p.type==='away'?'#0984e3':p.type==='gk-home'?'#40b8a8':p.type==='gk-away'?'#111':'#d63031');
  const c2=p.c2||'#fff';
  const bg=tpTokenBg(c1,c2,p.kitStyle||'solid');
  const lab=p.showNum!==false?String(p.label==null?'':p.label):'';
@@ -8856,33 +9464,29 @@ function tpRenderSquad(){
  box.innerHTML=(on.home?row('home'):'')+(on.away?row('away'):'');
 }
 function tpSquadDrag(e,team,lab,isGk){
+ if((e.button!=null&&e.button!==0)||e.isPrimary===false)return;
  e.preventDefault(); e.stopPropagation();
+ const pointerId=e.pointerId, source=e.currentTarget;
  const ghost=document.createElement('div');
- ghost.className='tp-squad-ghost';
- ghost.innerHTML=e.currentTarget.innerHTML;
- ghost.style.background=e.currentTarget.style.background;
+ ghost.className='tp-squad-ghost'; ghost.innerHTML=source.innerHTML; ghost.style.background=source.style.background;
  document.body.appendChild(ghost);
- function place(ev){
-  ghost.style.left=(ev.clientX-18)+'px';
-  ghost.style.top=(ev.clientY-18)+'px';
- }
+ let ended=false;
+ function place(ev){if(ev.pointerId!==pointerId)return;ghost.style.left=(ev.clientX-18)+'px';ghost.style.top=(ev.clientY-18)+'px';}
  place(e);
- function up(ev){
-  document.removeEventListener('pointermove',place);
-  document.removeEventListener('pointerup',up);
-  ghost.remove();
+ function finish(ev,cancelled){
+  if(ended || (ev.pointerId!=null&&ev.pointerId!==pointerId))return;
+  ended=true;
+  document.removeEventListener('pointermove',place);document.removeEventListener('pointerup',up);document.removeEventListener('pointercancel',cancel);
+  window.removeEventListener('blur',cancel);ghost.remove();
+  if(cancelled)return;
   const br=tpBoardRect();
-  if(!br) return;
-  if(ev.clientX<br.left||ev.clientY<br.top||ev.clientX>br.right||ev.clientY>br.bottom) return;
+  if(!br||!br.width||!br.height||ev.clientX<br.left||ev.clientY<br.top||ev.clientX>br.right||ev.clientY>br.bottom)return;
   const type=isGk?(team==='away'?'gk-away':'gk-home'):(team==='away'?'away':'home');
   const piece={id:tpNewId(),type:type,x:(ev.clientX-br.left)/br.width*100,y:(ev.clientY-br.top)/br.height*100,rot:0,w:isGk?7:6,h:isGk?7:6,label:lab};
-  tpApplyKitToPiece(piece);
-  tpInsertPiece(piece);
-  tpSetSel(piece.id,false);
-  tpRenderPieces();
+  tpApplyKitToPiece(piece);tpPushUndo();tpInsertPiece(piece);tpSetSel(piece.id,false);tpRenderPieces();
  }
- document.addEventListener('pointermove',place);
- document.addEventListener('pointerup',up);
+ function up(ev){finish(ev,false);} function cancel(ev){finish(ev,true);}
+ document.addEventListener('pointermove',place);document.addEventListener('pointerup',up);document.addEventListener('pointercancel',cancel);window.addEventListener('blur',cancel);
 }
 
 
@@ -8897,7 +9501,7 @@ function tpToolClick(e,type){
  if(type==='ball') adicionarBolaPrancheta(); else tpAdd(type);
 }
 function tpToolPointer(e,type){
- if(e.button && e.button!==0) return;
+ if((e.button!=null&&e.button!==0)||e.isPrimary===false) return;
  // Do not preventDefault or create a piece on touch-down: allow native scroll.
  if(tpToolIsMobile()) return;
  e.preventDefault(); e.stopPropagation();
@@ -8906,18 +9510,24 @@ function tpToolPointer(e,type){
  const names={ball:'●',cone:'▲',goal:'⌂',arrow:'→',square:'□',circle:'○',home:'C',away:'F','gk-home':'G','gk-away':'G'};
  ghost.textContent=names[type]||'+';
  document.body.appendChild(ghost);
- let moved=false;
- const startX=e.clientX, startY=e.clientY;
+ let moved=false, ended=false;
+ const pointerId=e.pointerId,startX=e.clientX, startY=e.clientY;
  function place(ev){
+  if(ev.pointerId!==pointerId)return;
   ghost.style.left=(ev.clientX-18)+'px';
   ghost.style.top=(ev.clientY-18)+'px';
   if(Math.hypot(ev.clientX-startX, ev.clientY-startY)>6) moved=true;
  }
  place(e);
- function up(ev){
+ function finish(ev,cancelled){
+  if(ended || (ev.pointerId!=null&&ev.pointerId!==pointerId))return;
+  ended=true;
   document.removeEventListener('pointermove',place);
   document.removeEventListener('pointerup',up);
+  document.removeEventListener('pointercancel',cancel);
+  window.removeEventListener('blur',cancel);
   ghost.remove();
+  if(cancelled)return;
   const br=tpBoardRect();
   const over=br && ev.clientX>=br.left && ev.clientY>=br.top && ev.clientX<=br.right && ev.clientY<=br.bottom;
   if(over && moved){
@@ -8937,12 +9547,15 @@ function tpToolPointer(e,type){
    tpInsertPiece(piece);
    tpSetSel(piece.id,false);
    tpRenderPieces();
-  }else{
+  }else if(!moved){
    if(type==='ball') adicionarBolaPrancheta(); else tpAdd(type);
   }
  }
+ function up(ev){finish(ev,false);} function cancel(ev){finish(ev,true);}
  document.addEventListener('pointermove',place);
  document.addEventListener('pointerup',up);
+ document.addEventListener('pointercancel',cancel);
+ window.addEventListener('blur',cancel);
 }
 
 function tpAdd(type){
@@ -8959,6 +9572,7 @@ function tpAdd(type){
  const xy=tpSpawnXY(type);
  const piece={id:tpNewId(),type,x:xy.x,y:xy.y,rot,w,h,label};
  if(typeof tpApplyKitToPiece==='function') tpApplyKitToPiece(piece);
+ tpPushUndo();
  tpInsertPiece(piece);
  tpSetSel(piece.id,false);
  tpRenderPieces();
@@ -9212,6 +9826,7 @@ function tpApagarFrame(i){
 function tpCarregarFrame(i){
  const f=tpState.frames[i]; if(!f)return;
  tpState.pieces=JSON.parse(JSON.stringify(f.pieces));
+ tpSetSel(null); tpHideCtx(); tpSyncNextId();
  tpRenderPieces();
 }
 function tpRenderFrames(){
@@ -9383,15 +9998,15 @@ function tpExcluirPeca(){
  tpHideCtx();
  tpRenderPieces();
 }
+function tpFecharTelasMob(){
+ const f=document.querySelector('.tp-frames.open');
+ if(f){f.classList.remove('open');const body=document.querySelector('.tp-body');if(body)body.appendChild(f);}
+ const bg=document.getElementById('tp-telas-bg');if(bg)bg.remove();
+}
 function tpToggleTelasMob(){
  const f=document.querySelector('.tp-frames');
  if(!f)return;
- if(f.classList.contains('open')){
-  f.classList.remove('open');
-  const bg=document.getElementById('tp-telas-bg');
-  if(bg) bg.remove();
-  return;
- }
+ if(f.classList.contains('open')){ tpFecharTelasMob(); return; }
  f.classList.add('open');
  document.body.appendChild(f);
  f.style.zIndex='100002';
@@ -9400,12 +10015,7 @@ function tpToggleTelasMob(){
  if(!bg){
   bg=document.createElement('div');
   bg.id='tp-telas-bg'; bg.className='tp-add-bg';
-  bg.onclick=function(){
-   f.classList.remove('open');
-   const body=document.querySelector('.tp-body');
-   if(body) body.appendChild(f);
-   bg.remove();
-  };
+  bg.onclick=tpFecharTelasMob;
  }
  document.body.appendChild(bg);
  bg.style.zIndex='100001';
@@ -9498,14 +10108,16 @@ function tpDrawPieces(ctx,W,H,pieces){
   const x=(p.x/100)*W, y=(p.y/100)*H;
   if(p.type==='arrow'){
    ctx.save(); ctx.translate(x,y); ctx.rotate(p.rot*Math.PI/180);
-   const len=(p.w/100)*W; ctx.strokeStyle='#111'; ctx.fillStyle='#111'; ctx.lineWidth=2; ctx.lineCap='round';
+   const len=(p.w/100)*W; ctx.strokeStyle=p.color||'#111'; ctx.fillStyle=p.color||'#111'; ctx.lineWidth=2; ctx.lineCap='round';
+   if(p.stroke==='dash')ctx.setLineDash([7,6]);
    ctx.beginPath(); ctx.moveTo(-len/2,0); ctx.lineTo(len/2-8,0); ctx.stroke();
    ctx.beginPath(); ctx.moveTo(len/2,0); ctx.lineTo(len/2-11,-4.5); ctx.lineTo(len/2-11,4.5); ctx.closePath(); ctx.fill();
    ctx.restore(); return;
   }
   if(p.type==='square'||p.type==='circle'){
    ctx.save(); ctx.translate(x,y); ctx.rotate((p.rot||0)*Math.PI/180);
-   ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.fillStyle='rgba(0,0,0,0)';
+   ctx.strokeStyle=p.color||'#fff'; ctx.lineWidth=2; ctx.fillStyle='rgba(0,0,0,0)';
+   if(p.stroke==='dash')ctx.setLineDash([7,6]);
    const ww=(p.w/100)*W, hh=(p.h/100)*H;
    if(p.type==='circle'){ ctx.beginPath(); ctx.ellipse(0,0,ww/2,hh/2,0,0,Math.PI*2); ctx.stroke(); }
    else { ctx.strokeRect(-ww/2,-hh/2,ww,hh); }
@@ -9556,7 +10168,7 @@ function tpMixPieces(a,b,t){
  a.forEach(pa=>{
   const pb=mapB.get(pa.id);
   if(!pb){ out.push(pa); return; }
-  out.push({id:pa.id,type:pa.type,label:pb.label,x:tpLerp(pa.x,pb.x,t),y:tpLerp(pa.y,pb.y,t),w:tpLerp(pa.w,pb.w,t),h:tpLerp(pa.h,pb.h,t),rot:tpLerp(pa.rot,pb.rot,t)});
+  out.push({...pa,...(t>=1?pb:{}),id:pa.id,type:pa.type,label:pb.label,x:tpLerp(pa.x,pb.x,t),y:tpLerp(pa.y,pb.y,t),w:tpLerp(pa.w,pb.w,t),h:tpLerp(pa.h,pb.h,t),rot:tpLerp(pa.rot||0,pb.rot||0,t)});
  });
  b.forEach(pb=>{ if(!a.some(pa=>pa.id===pb.id)) out.push(pb); });
  return out;
@@ -12171,7 +12783,8 @@ function tpAbrirProjetos(){
 }
 function tpDadosProjeto(){
  const sel=document.getElementById('mini-tactical-system');
- return { sistema: sel?sel.value:'4-3-3', pieces: tpState.pieces, frames: tpState.frames };
+ tpKitEnsure();
+ return { sistema: sel?sel.value:'4-3-3', pieces: tpState.pieces, frames: tpState.frames, kit:saLocalClone(tpState.kit), homeN:tpState.homeN, awayN:tpState.awayN };
 }
 function tpEscNome(n){ return String(n||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 async function tpGravarProjetoNome(nome, substituir){
@@ -12221,16 +12834,44 @@ async function tpListarProjetos(){
   return '<div class="tp-proj-item"><span>'+n+'<small>'+d+'</small></span><button type="button" onclick="tpCarregarProjeto(\''+n.replace(/'/g,"\\'")+'\')">Abrir</button><button type="button" class="del" onclick="tpApagarProjeto(\''+n.replace(/'/g,"\\'")+'\')">×</button></div>';
  }).join('')+'<button type="button" class="tp-proj-cancel" onclick="tpFecharProjUI()">Fechar</button>';
 }
+// Projetos antigos não armazenavam a configuração das equipes. Reconstituímos
+// uma referência pelas peças existentes, sem mudar a aparência de nenhuma delas.
+function tpKitDoProjetoAntigo(pieces){
+ const defaults={
+  home:{c1:'#1e6fff',c2:'#ffffff',style:'solid',showNum:true,showName:true,numPos:'in',gkC1:'#40b8a8',gkC2:'#111111'},
+  away:{c1:'#d63031',c2:'#ffffff',style:'solid',showNum:true,showName:true,numPos:'in',gkC1:'#111111',gkC2:'#40b8a8'}
+ };
+ ['home','away'].forEach(team=>{
+  const players=pieces.filter(p=>p&&p.type===team);
+  const keep=players.reduce((map,p)=>{const val=JSON.stringify([p.c1||p.color||(team==='away'?'#0984e3':'#d63031'),p.c2||'#fff',p.kitStyle||'solid',p.showNum!==false,p.showName!==false]);map.set(val,(map.get(val)||0)+1);return map;},new Map());
+  let best='',score=0;keep.forEach((count,key)=>{if(count>score){best=key;score=count;}});
+  if(best){const [c1,c2,style,showNum,showName]=JSON.parse(best);Object.assign(defaults[team],{c1,c2,style,showNum,showName});}
+  const gk=pieces.find(p=>p&&p.type==='gk-'+team);
+  if(gk){defaults[team].gkC1=gk.c1||gk.color||(team==='away'?'#111':'#40b8a8');defaults[team].gkC2=gk.c2||'#fff';}
+ });
+ return defaults;
+}
+function tpNumeroDepoisDasPecas(pieces,team){
+ let max=0;
+ pieces.forEach(p=>{if(p&&p.type===team&&/^\d+$/.test(String(p.label||'')))max=Math.max(max,Number(p.label));});
+ return max+1;
+}
 async function tpCarregarProjeto(nome){
  const {data,error}=await _saData.from('prancheta_projetos').select('dados').eq('nome',nome).single();
  if(error||!data){ alert('Não carregou o projeto.'); return; }
- const d=data.dados||{};
- tpState.pieces=Array.isArray(d.pieces)?d.pieces:[];
- tpState.frames=Array.isArray(d.frames)?d.frames:[];
- tpState.sel=null;
+ const d=tpNormalizarProjeto(data.dados||{});
+ tpState.pieces=d.pieces; tpState.frames=d.frames;
+ const inferred=tpKitDoProjetoAntigo(tpState.pieces);
+ if(d.kit && typeof d.kit==='object'){
+  ['home','away'].forEach(team=>{if(d.kit[team]&&typeof d.kit[team]==='object')Object.assign(inferred[team],d.kit[team]);});
+ }
+ tpState.kit=inferred;
+ tpState.homeN=Number.isSafeInteger(d.homeN)&&d.homeN>0?d.homeN:tpNumeroDepoisDasPecas(tpState.pieces,'home');
+ tpState.awayN=Number.isSafeInteger(d.awayN)&&d.awayN>0?d.awayN:tpNumeroDepoisDasPecas(tpState.pieces,'away');
+ tpSetSel(null); tpHideCtx(); tpCloseKit(); tpUndo=[]; tpSyncNextId();
  const sel=document.getElementById('mini-tactical-system');
  if(sel && d.sistema) sel.value=d.sistema;
- tpRenderPieces(); tpRenderFrames();
+ tpRenderPieces(); tpRenderFrames(); tpPaintKitDiscs(); tpRenderSquad();
  tpFecharProjUI();
 }
 async function tpApagarProjeto(nome){
@@ -12451,7 +13092,7 @@ function imprimirAvdRelatorio(){
  const tipoLab=avdRelState.tipo==='treino'?'Só treino':(avdRelState.tipo==='jogo'?'Só jogo':'Treino + jogo');
  periodo=periodo+' · '+tipoLab;
  const rows=avdRelLinhasOrd().map(l=>'<tr><td>'+avdEsc(l.nome)+'</td><td>'+avdEsc(l.ano)+'</td><td>'+l.faltas+'</td><td>'+l.dm+'</td><td>'+avdRelMediaBR(l.media)+'</td></tr>').join('');
- const w=window.open('','avdrelprint','width=900,height=700');
+ const w=saOpenPrintWindow('avdrelprint', 'width=900,height=700', true);
  if(!w){ alert('Permita pop-up para imprimir.'); return; }
  const logo=saSiteEscape(saSiteCurrentLogoSrc());
  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Relatório Avaliação Diária</title><style>body{font-family:Arial,sans-serif;margin:16px}.avd-report-head{display:flex;align-items:center;justify-content:center;gap:14px;margin:0 0 10px}.avd-report-head img{width:54px;height:54px;object-fit:contain}.avd-report-head h2{color:#173b59;text-align:center;margin:6px 0}h3{color:#173b59;text-align:center;margin:6px 0}table{width:100%;border-collapse:collapse}th{background:#173b59;color:#40b8a8}th,td{border:1px solid #999;padding:8px;text-align:center}td:first-child{text-align:left}@page{margin:10mm}</style></head><body><header class="avd-report-head"><img src="'+logo+'" alt="Logo da equipe"><h2>VBolonheze Sports — Avaliação Diária</h2></header><h3>'+avdEsc(lab)+' · '+avdEsc(periodo)+'</h3><table><thead><tr><th>Nome</th><th>Ano</th><th>Faltas</th><th>DM</th><th>Média</th></tr></thead><tbody>'+(rows||'<tr><td colspan="5">Nenhum atleta.</td></tr>')+'</tbody></table><script>window.onload=function(){setTimeout(function(){window.print()},300)}<\/script></body></html>');
@@ -12498,7 +13139,7 @@ function renderAvdRelatorio(){
   <h2>Relatório — Avaliação Diária</h2>
   <div class="avd-rel-cats">${catBtns}</div>
   ${filtros}
-  ${avdRelState.cat?`<div class="avd-rel-actions"><button type="button" class="avd-rel-print" ${avdRelState.carregando?'disabled':''} onclick="imprimirAvdRelatorio()">Imprimir/Exportar</button></div>`:''}
+  ${avdRelState.cat?`<div class="avd-rel-actions"><button type="button" class="avd-rel-print" ${avdRelState.carregando?'disabled':''} onclick="imprimirAvdRelatorio()">Exportar PDF</button></div>`:''}
   ${corpo}
  </div>`;
 }
@@ -12533,7 +13174,7 @@ function avdRender(){
    <label>Dias salvos <select onchange="if(this.value)avdSetData(this.value)"><option value="">—</option>${diasOpts}</select></label>
    <button type="button" class="avd-save" onclick="avdSalvar()">Salvar</button>
    <button type="button" class="avd-del" onclick="avdExcluirDia()">Excluir dia</button>
-   <button type="button" class="avd-print" onclick="avdRelatorio()">Imprimir/Exportar</button>
+   <button type="button" class="avd-print" onclick="avdRelatorio()">Exportar PDF</button>
    <button type="button" class="avd-rel" onclick="openAvdRelatorio()">Relatório</button>
   </div>
   <div class="avd-legenda"><span><b>F</b> falta</span><span><b>X</b> sem nota</span><span><b>DM</b> lesionado (só fortalecimento)</span><span><b>NC</b> não convocado</span><span><b>1–2</b> fraco</span><span><b>3</b> médio</span><span><b>4–5</b> bom</span><span><b>PSE</b> desempenho autoavaliado</span></div>
@@ -12636,8 +13277,9 @@ function avdRelatorio(){
   return '<tr><td>'+avdEsc(a.id.apelido||a.id.nomeCompleto)+'</td><td>'+avdEsc(a.id.ano||'')+'</td><td>'+lab+'</td></tr>';
  }).join('');
  const logo=saSiteEscape(saSiteCurrentLogoSrc());
- const w=window.open('','avdprint','width=900,height=700');
- w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Avaliação Diária</title><style>body{font-family:Arial,sans-serif;margin:16px;color:#111}.avd-report-head{display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:10px}.avd-report-head img{width:54px;height:54px;object-fit:contain}.avd-report-head h2{color:#173b59;text-align:center;margin:6px 0}table{width:100%;border-collapse:collapse}th{background:#173b59;color:#40b8a8}th,td{border:1px solid #999;padding:8px;text-align:center}td:first-child{text-align:left}pre{white-space:pre-wrap;border:1px solid #ddd;padding:10px;background:#faf7f0}</style></head><body><header class="avd-report-head"><img src="'+logo+'" alt="Logo da equipe"><h2>Avaliação Diária — '+avdEsc(cat?.label||'')+' — '+avdBR(avdState.data)+'</h2></header><p><b>F</b> falta · <b>X</b> sem nota · <b>DM</b> lesionado (fortalecimento) · <b>NC</b> não convocado · <b>1–2</b> fraco · <b>3</b> médio · <b>4–5</b> bom</p><table><thead><tr><th>Atleta</th><th>Ano</th><th>Nota</th></tr></thead><tbody>'+rows+'</tbody></table><h3>Objetivos e informações</h3><pre>'+avdEsc(avdState.anotacao||'—')+'</pre><script>window.onload=()=>setTimeout(()=>window.print(),300)<\\/script></body></html>');
+ const w=saOpenPrintWindow('avdprint', 'width=900,height=700', true);
+ if(!w){alert('Não foi possível abrir a impressão. Permita pop-ups e tente novamente.');return;}
+ w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Avaliação Diária</title><style>body{font-family:Arial,sans-serif;margin:16px;color:#111}.avd-report-head{display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:10px}.avd-report-head img{width:54px;height:54px;object-fit:contain}.avd-report-head h2{color:#173b59;text-align:center;margin:6px 0}table{width:100%;border-collapse:collapse}th{background:#173b59;color:#40b8a8}th,td{border:1px solid #999;padding:8px;text-align:center}td:first-child{text-align:left}pre{white-space:pre-wrap;border:1px solid #ddd;padding:10px;background:#faf7f0}</style></head><body><header class="avd-report-head"><img src="'+logo+'" alt="Logo da equipe"><h2>Avaliação Diária — '+avdEsc(cat?.label||'')+' — '+avdBR(avdState.data)+'</h2></header><p><b>F</b> falta · <b>X</b> sem nota · <b>DM</b> lesionado (fortalecimento) · <b>NC</b> não convocado · <b>1–2</b> fraco · <b>3</b> médio · <b>4–5</b> bom</p><table><thead><tr><th>Atleta</th><th>Ano</th><th>Nota</th></tr></thead><tbody>'+rows+'</tbody></table><h3>Objetivos e informações</h3><pre>'+avdEsc(avdState.anotacao||'—')+'</pre><script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>');
  w.document.close();
 }
 
@@ -12741,41 +13383,19 @@ function saOpcoesPDF(filename, orientacao='portrait', tipo='normal'){
   pagebreak:{mode: tipo==='convocacao-campo' ? ['avoid-all'] : ['avoid-all','css','legacy']}
  };
 }
-async function saCompartilharOuSalvarPDF(elemento, filename, orientacao='portrait', tipo='normal', titulo='VBolonheze Sports'){
+async function saCompartilharOuSalvarPDF(elemento, filename, orientacao='portrait', tipo='normal', titulo='VBolonheze Sports', imprimir=()=>window.print()){
  if(!elemento)return alert('Não encontrei o conteúdo para exportar.');
- if(typeof html2pdf==='undefined'){
-  alert('Exportação em PDF indisponível neste dispositivo.');
-  return;
- }
- const wrapper=saPrepararWrapperPDF(elemento,orientacao,tipo);
- const opt=saOpcoesPDF(filename,orientacao,tipo);
+ if(!saPodeCompartilharPDF()||typeof html2pdf==='undefined'){imprimir();return;}
  try{
-  const blob=await html2pdf().from(wrapper).set(opt).outputPdf('blob');
-  const file=new File([blob],saSanitizeFilename(filename)+'.pdf',{type:'application/pdf'});
-  if(navigator.canShare&&navigator.canShare({files:[file]})){
-   await navigator.share({files:[file],title:titulo,text:'PDF gerado pelo VBolonheze Sports.'});
-  }else{
-   html2pdf().from(wrapper).set(opt).save();
-  }
- }catch(e){
-  console.error('Erro ao compartilhar PDF:',e);
-  html2pdf().from(wrapper).set(opt).save();
- }
+  const wrapper=saPrepararWrapperPDF(elemento,orientacao,tipo);
+  const blob=await html2pdf().from(wrapper).set(saOpcoesPDF(filename,orientacao,tipo)).outputPdf('blob');
+  await saEntregarPDF(blob,filename,titulo,imprimir);
+ }catch(e){console.warn('PDF indisponível; abrindo impressão:',e);imprimir();}
 }
 function saAjustarTextosMobileExportar(){
  if(!saIsMobile())return;
- document.querySelectorAll('button').forEach(btn=>{
-  const t=(btn.textContent||'').trim();
-  if(/imprimir/i.test(t)){
-   const dentroConvocacao=btn.closest&&btn.closest('#campo-convocacao-modal');
-   if(dentroConvocacao){
-    btn.innerHTML=btn.innerHTML.replace(/IMPRIMIR/gi,'COMPARTILHAR PDF').replace(/Imprimir/gi,'Compartilhar PDF').replace(/🖨/g,'📤');
-    btn.title='Compartilhar PDF';
-   }else{
-    btn.innerHTML=btn.innerHTML.replace(/IMPRIMIR/gi,'EXPORTAR PDF').replace(/Imprimir/gi,'Exportar PDF').replace(/🖨/g,'📄');
-    btn.title='Exportar PDF';
-   }
-  }
+ document.querySelectorAll('button[onclick*="imprimirFichasTreino()"],button[onclick*="imprimirConvocacaoCampo()"],button[onclick*="manualConvocacaoImprimirCampo()"]') .forEach(btn=>{
+  if(/imprimir/i.test(btn.textContent||'')){btn.innerHTML=btn.innerHTML.replace(/IMPRIMIR/gi,'EXPORTAR PDF').replace(/Imprimir/gi,'Exportar PDF').replace(/🖨/g,'📄');btn.title='Exportar PDF';}
  });
 }
 (function iniciarAjustesMobilesa(){
@@ -12789,20 +13409,13 @@ function saAjustarTextosMobileExportar(){
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();
 })();
 
-if(typeof imprimirFichasTreino==='function'){
- const imprimirFichasTreinoDesktop=imprimirFichasTreino;
- imprimirFichasTreino=function(){
-  if(!saIsMobile())return imprimirFichasTreinoDesktop();
-  const el=document.getElementById('fichas-render-container');
-  saExportElementPDF(el,'fichas_treino_sistema_aberto','landscape');
- };
-}
 if(typeof imprimirConvocacaoCampo==='function'){
  const imprimirConvocacaoCampoDesktop=imprimirConvocacaoCampo;
+ window.saImprimirConvocacaoOriginal=imprimirConvocacaoCampoDesktop;
  imprimirConvocacaoCampo=function(){
   if(!saIsMobile())return imprimirConvocacaoCampoDesktop();
   const card=document.querySelector('#campo-convocacao-modal .campo-card');
-  saCompartilharOuSalvarPDF(card,'convocacao_vbolonheze_sports','landscape','convocacao-campo','Convocação VBolonheze Sports');
+  saCompartilharOuSalvarPDF(card,'convocacao_vbolonheze_sports','landscape','convocacao-campo','Convocação VBolonheze Sports',imprimirConvocacaoCampoDesktop);
  };
 }
 if(typeof printFicha==='function'){
@@ -13385,7 +13998,9 @@ function renderFotosCategorias(){
  window.__aeFotoCategoria='';
  const modal=document.getElementById('fotos-atletas-modal');if(!modal)return;
  const cats=fotosCategoriasConfig();
- modal.innerHTML=`<div class="fotos-categorias-card"><button class="fotos-close" onclick="closeFotosModal()">×</button><img src="sa-logo.svg" class="fotos-logo-main"><h2>VBolonheze Sports</h2><p>Fotos dos atletas</p><button id="fotos-preload-btn" class="fotos-preload-btn" onclick="carregarFotosAtletasAntecipado()">Carregar fotos</button><div id="fotos-preload-status" class="fotos-preload-status"></div><div class="fotos-cat-buttons">${Object.keys(cats).map(k=>`<button onclick="renderFotosCategoria('${k}')">${cats[k].label}</button>`).join('')}</div></div>`;
+ const ocupadas=Object.keys(cats).filter(k=>fotosAtletasCategoria(k).length>0);
+ const botoes=ocupadas.map(k=>`<button onclick="renderFotosCategoria('${k}')">${saSiteEscape(cats[k].label)}</button>`).join('');
+ modal.innerHTML=`<div class="fotos-categorias-card"><button class="fotos-close" onclick="closeFotosModal()">×</button><img src="sa-logo.svg" class="fotos-logo-main"><h2>VBolonheze Sports</h2><p>Fotos dos atletas</p><button id="fotos-preload-btn" class="fotos-preload-btn" onclick="carregarFotosAtletasAntecipado()">Carregar fotos</button><div id="fotos-preload-status" class="fotos-preload-status"></div><div class="fotos-cat-buttons">${botoes || '<p>Nenhuma categoria com atletas cadastrados.</p>'}</div></div>`;
  fotosAtualizarStatusPreload();
 }
 function fotosAtletasCategoria(catKey, anosFiltro){
@@ -14000,17 +14615,22 @@ function treinoLerTela(){
  if(prepEl) st.prepFisica=prepEl.checked;
  if(pdeEl) st.pdeOn=pdeEl.checked;
  if(nEl) st.nModulos=Math.max(0,Math.min(4,Number(nEl.value||0)));
- const pg=(document.querySelector('input[name="tr-pf-g"]:checked')||{}).value||'sem';
- st.prep={titulo:treinoVal('tr-pf-tit')||'Prep. Física - Neno', goleiro:pg, duracao:treinoVal('tr-pf-dur'), descricao:treinoVal('tr-pf-desc'), img:(st.prep&&st.prep.img)||''};
+ // Campos de blocos ocultos não existem no DOM. Não apague seus dados ao
+ // alternar opções, fechar a ficha ou exportar o treino.
+ if(document.getElementById('tr-pf-tit')){
+  const pg=(document.querySelector('input[name="tr-pf-g"]:checked')||{}).value||'sem';
+  st.prep={...(st.prep||{}),titulo:treinoVal('tr-pf-tit')||'Prep. Física - Neno', goleiro:pg, duracao:treinoVal('tr-pf-dur'), descricao:treinoVal('tr-pf-desc'), img:(st.prep&&st.prep.img)||''};
+ }
  for(let i=0;i<4;i++){
+  if(!document.getElementById('tr-m'+i+'-tit'))continue;
   const g=(document.querySelector('input[name="tr-m'+i+'-g"]:checked')||{}).value||'sem';
   st.modulos[i]={
-   titulo:treinoVal('tr-m'+i+'-tit'), goleiro:g, duracao:treinoVal('tr-m'+i+'-dur'), dimensao:treinoVal('tr-m'+i+'-dim'),
+   ...(st.modulos[i]||{}), titulo:treinoVal('tr-m'+i+'-tit'), goleiro:g, duracao:treinoVal('tr-m'+i+'-dur'), dimensao:treinoVal('tr-m'+i+'-dim'),
    series:treinoVal('tr-m'+i+'-ser'), relacao:treinoVal('tr-m'+i+'-rel'), descricao:treinoVal('tr-m'+i+'-desc'), conteudo:treinoVal('tr-m'+i+'-con'),
    img:(st.modulos[i]&&st.modulos[i].img)||''
   };
  }
- st.pde={horario:treinoVal('tr-pde-h'), treinador:treinoVal('tr-pde-tr'), tempo:treinoVal('tr-pde-te'), tecnica:treinoVal('tr-pde-tec'), atividade:treinoVal('tr-pde-at'), atletas:treinoVal('tr-pde-atl')};
+ if(document.getElementById('tr-pde-h')) st.pde={...(st.pde||{}),horario:treinoVal('tr-pde-h'), treinador:treinoVal('tr-pde-tr'), tempo:treinoVal('tr-pde-te'), tecnica:treinoVal('tr-pde-tec'), atividade:treinoVal('tr-pde-at'), atletas:treinoVal('tr-pde-atl')};
  treinoSaveLS();
 }
 function treinoOnChange(){ treinoLerTela(); renderCriacaoTreino(); }
@@ -14114,7 +14734,8 @@ function renderCriacaoTreino(){
  m.innerHTML=`<div class="tr-card">
   <button type="button" class="tr-close tr-no-print" onclick="closeCriacaoTreino()">×</button>
   <div class="tr-toolbar tr-no-print">
-   <button type="button" class="tr-pdf" onclick="imprimirCriacaoTreino()">Exportar / Salvar PDF</button>
+   <button type="button" class="tr-pdf" onclick="imprimirCriacaoTreino()">Exportar PDF</button>
+   <button type="button" class="tr-pdf tr-save-pdf" onclick="imprimirCriacaoTreino('salvar')">Salvar PDF</button>
    <button type="button" class="tr-limpar" onclick="treinoLimpar()">Limpar ficha</button>
    <label class="tr-opt"><input type="checkbox" id="tr-prep" ${st.prepFisica?'checked':''} onchange="treinoOnChange()"> Prep. Física</label>
    <label class="tr-opt">Módulos <select id="tr-nmod" onchange="treinoOnChange()">${[0,1,2,3,4].map(n=>`<option value="${n}" ${Number(st.nModulos)===n?'selected':''}>${n}</option>`).join('')}</select></label>
@@ -14161,12 +14782,9 @@ function treinoDataBR(iso){
 }
 function treinoTxt(v){ return treinoEsc(v).replace(/\n/g,'<br>'); }
 function treinoXprint(cur,v){ return cur===v?'<b class="x">X</b>':''; }
-function imprimirCriacaoTreino(){
+function imprimirCriacaoTreino(modo='exportar'){
  treinoLerTela();
- let pdfNome=prompt('Nome do arquivo PDF:','treino-sa');
- if(pdfNome===null) return;
- pdfNome=String(pdfNome||'treino-sa').replace(/[\\/:*?"<>|]+/g,'').trim()||'treino-sa';
- if(!/\.pdf$/i.test(pdfNome)) pdfNome+='.pdf';
+ const pdfNome='Plano de treino.pdf';
  const st=treinoState||treinoPadrao();
  const logo=saSiteCurrentLogoSrc();
  let html=`<table class="cab"><tr><td class="logo" rowspan="9"><img src="${treinoEsc(logo)}" alt="Logo da equipe"></td><th colspan="4" class="tit">PLANO DE TREINO<span class="vb-brand-corner tr-print-brand">VBolonheze Sports</span></th></tr>`;
@@ -14215,16 +14833,17 @@ function imprimirCriacaoTreino(){
    <td><table class="blk"><tr><th class="kh">ATIVIDADE:</th></tr><tr><td class="ctr">${treinoTxt(st.pde.atividade)}</td></tr></table></td>
   </tr></table>`;
  }
- const w=window.open('','treino-pdf','width=794,height=1123');
+ const w=saOpenPrintWindow('treino-pdf', 'width=794,height=1123');
  if(!w){ alert('Permita pop-up para salvar o PDF.'); return; }
- w.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=794"><title>Planilha de treino</title>
+ w.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=794"><title>${treinoEsc(pdfNome.replace(/\.pdf$/i,''))}</title>
 <style>
 *{box-sizing:border-box}
-html,body{margin:0;padding:0;background:#fff;width:794px;min-width:794px;max-width:794px}
-@page{size:A4 portrait;margin:5mm}
-#fit{width:200mm;margin:0 auto;font-family:Calibri,Carlito,Arial,sans-serif;font-size:9pt;color:#000}
-table{border-collapse:collapse;width:100%;margin:0 0 2px}
-td,th{border:1px solid #000;padding:1px 3px;vertical-align:middle;line-height:1.12}
+html,body{margin:0;padding:0;background:#fff;width:210mm;min-width:210mm}
+@page{size:A4 portrait;margin:0}
+#page{position:relative;width:210mm;height:296.8mm;overflow:hidden;background:#fff}
+#fit{position:absolute;left:5mm;top:5mm;width:200mm;margin:0;transform-origin:top left;font-family:Calibri,Carlito,Arial,sans-serif;font-size:9pt;color:#000}
+table{border-collapse:collapse;table-layout:fixed;width:100%;margin:0 0 2px}
+td,th{border:1px solid #000;padding:1px 3px;vertical-align:middle;line-height:1.12;overflow-wrap:anywhere;word-break:break-word}
 .tit{position:relative;background:#000!important;color:#fff!important;font-size:11pt;font-weight:800;text-align:center;padding:2px;-webkit-print-color-adjust:exact;print-color-adjust:exact}.vb-brand-corner{position:absolute;top:2px;right:4px;z-index:8;display:inline-block;padding:2px 6px;border:1px solid #40b8a8;border-radius:999px;background:#fff;color:#173b59;font:800 7pt/1.1 Arial,sans-serif;white-space:nowrap}
 .lab{background:#fff;color:#000;font-weight:800;text-align:left;width:20%;font-size:11pt}
 .ch{font-weight:800;text-align:center;font-size:11pt}
@@ -14246,64 +14865,81 @@ td,th{border:1px solid #000;padding:1px 3px;vertical-align:middle;line-height:1.
 .pde3{border:0!important;margin:0 0 3px}
 .pde3>tbody>tr>td{border:0!important;padding:0 3px;vertical-align:top}
 *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
-</style></head><body><div id="sharebar" style="display:none;position:fixed;left:0;right:0;bottom:0;z-index:99999;padding:10px;background:#173b59;text-align:center"><button type="button" id="btnSharePdf" style="width:100%;max-width:420px;padding:14px;font-size:16px;font-weight:800;border:0;border-radius:8px;background:#40b8a8;color:#111">Enviar PDF (WhatsApp)</button></div><div id="fit">${html}</div>
+@media print{#sharebar{display:none!important}}
+</style></head><body><div id="sharebar" style="display:none;position:fixed;left:0;right:0;bottom:0;z-index:99999;padding:10px;background:#173b59;text-align:center"><button type="button" id="btnSharePdf" style="padding:14px;font-size:16px;font-weight:800;border:0;border-radius:8px;background:#40b8a8;color:#111">Compartilhar PDF</button> <button type="button" id="btnDownloadPdf" style="padding:14px;font-size:16px;font-weight:800;border:0;border-radius:8px;background:#fff;color:#173b59">Imprimir</button></div><div id="page"><div id="fit">${html}</div></div>
 <script>
 window.onload=function(){
- var el=document.getElementById('fit');
- var pdfNome=${JSON.stringify(pdfNome)};
- var maxH=1050;
+ var el=document.getElementById('fit'), page=document.getElementById('page');
+ var pdfNome=${JSON.stringify(pdfNome)}, pdfModo=${JSON.stringify(modo)};
  var mob=/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)||(navigator.maxTouchPoints>0);
- if(!mob){
-  var h=el.scrollHeight||el.offsetHeight;
-  if(h>maxH){
-   var z=maxH/h;
-   el.style.transformOrigin='top center';
-   el.style.transform='scale('+z+')';
-   document.documentElement.style.zoom=z;
-   document.body.style.zoom=z;
-  }
-  setTimeout(function(){ window.print(); },300);
-  return;
+ var naturalW=0, naturalH=0, scaleFit=1;
+ // Meça o documento completo, inclusive palavras compridas e imagens, e use
+ // uma única escala proporcional na área útil da página A4 (5 mm de margem).
+ function ajustar(){
+  el.style.transform='none';
+  var margin=5*96/25.4;
+  naturalW=Math.max(el.offsetWidth,el.scrollWidth);
+  naturalH=Math.max(el.offsetHeight,el.scrollHeight);
+  var usableW=Math.max(1,page.clientWidth-2*margin-2);
+  var usableH=Math.max(1,page.clientHeight-2*margin-2);
+  scaleFit=Math.min(1,usableW/Math.max(1,naturalW),usableH/Math.max(1,naturalH));
+  el.style.left=((page.clientWidth-naturalW*scaleFit)/2)+'px';
+  el.style.transform='scale('+scaleFit+')';
  }
- setTimeout(function(){
-  if(mob){
-   function load(src){return new Promise(function(res,rej){var s=document.createElement('script');s.src=src;s.onload=res;s.onerror=rej;document.head.appendChild(s);});}
-   var vendorBase=${JSON.stringify(new URL('vendor/',document.baseURI||location.href).href)};
-   Promise.all([
-    load(vendorBase+'html2canvas.min.js'),
-    load(vendorBase+'jspdf.umd.min.js')
-   ]).then(function(){
-    return html2canvas(el,{scale:2,useCORS:true,backgroundColor:'#fff',logging:false,windowWidth:794,width:794});
-   }).then(function(canvas){
-    var J=(window.jspdf&&window.jspdf.jsPDF)||window.jsPDF;
-    var pdf=new J({orientation:'p',unit:'mm',format:'a4'});
-    var img=canvas.toDataURL('image/jpeg',0.92);
-    var cw=canvas.width, ch=canvas.height, pw=210, ph=297;
-    var sc=Math.min(pw/cw, ph/ch);
-    var w=cw*sc, h=ch*sc;
-    if(h>ph){ var z=ph/h; w*=z; h=ph; }
-    pdf.addImage(img,'JPEG',(pw-w)/2,4,w,h);
-    var blob=pdf.output('blob');
-    var file=new File([blob],pdfNome,{type:'application/pdf'});
-    function baixar(){ var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=pdfNome; a.click(); }
-    window._treinoFile=file;
-    var bar=document.getElementById('sharebar');
-    var btn=document.getElementById('btnSharePdf');
-    if(bar) bar.style.display='block';
-    function enviar(){
-     if(!navigator.share){ baixar(); return; }
-     navigator.share({files:[window._treinoFile],title:'Planilha de treino'}).catch(function(){
-      canvas.toBlob(function(png){
-       var img=new File([png],'sistema-aberto.png',{type:'image/png'});
-       navigator.share({files:[img],title:'Planilha de treino'}).catch(function(){ baixar(); });
-      },'image/png');
-     });
-    }
-    if(btn) btn.onclick=enviar;
-    enviar();
-   }).catch(function(err){ console.warn(err); window.print(); });
-  } else window.print();
- },350);
+ window.addEventListener('beforeprint',ajustar);
+ function esperarImagens(){
+  var images=Array.prototype.slice.call(el.querySelectorAll('img'));
+  return Promise.all(images.map(function(im){
+   if(im.complete)return Promise.resolve();
+   return new Promise(function(resolve){
+    var done=false;function finish(){if(done)return;done=true;im.removeEventListener('load',finish);im.removeEventListener('error',finish);resolve();}
+    im.addEventListener('load',finish);im.addEventListener('error',finish);setTimeout(finish,5000);
+   });
+  }));
+ }
+ function abrirImpressao(){ajustar();setTimeout(function(){window.print();},100);}
+ function load(src){return new Promise(function(res,rej){var s=document.createElement('script');s.src=src;s.onload=res;s.onerror=rej;document.head.appendChild(s);});}
+ var fonts=document.fonts&&document.fonts.ready?document.fonts.ready.catch(function(){}):Promise.resolve();
+ Promise.all([esperarImagens(),fonts]).then(function(){
+  ajustar();
+  var pode=false;try{pode=!!(navigator.share&&navigator.canShare&&navigator.canShare({files:[new File([''],'documento.pdf',{type:'application/pdf'})]}));}catch(_){}
+  if(pdfModo!=='salvar'&&!pode){abrirImpressao();return;}
+  var vendorBase=${JSON.stringify(new URL('vendor/',document.baseURI||location.href).href)};
+  return Promise.all([load(vendorBase+'html2canvas.min.js'),load(vendorBase+'jspdf.umd.min.js')]).then(function(){
+   // Renderize sem a transformação de tela e ajuste a resolução para não
+   // exceder os limites de canvas em fichas compridas, também no celular.
+   el.style.transform='none';
+   var rasterScale=Math.min(2,16000/Math.max(1,naturalW),16000/Math.max(1,naturalH),Math.sqrt(16000000/Math.max(1,naturalW*naturalH)));
+   if(!isFinite(rasterScale)||rasterScale<=0.01)throw new Error('Ficha longa demais para gerar o PDF neste navegador.');
+   return html2canvas(el,{scale:rasterScale,useCORS:true,backgroundColor:'#fff',logging:false,windowWidth:794,width:Math.ceil(naturalW),height:Math.ceil(naturalH),onclone:function(doc){var container=doc.getElementById('page');if(container)container.style.overflow='visible';}});
+  }).then(function(canvas){
+   ajustar();
+   if(!canvas.width||!canvas.height)throw new Error('Não foi possível gerar a imagem da ficha.');
+   var J=(window.jspdf&&window.jspdf.jsPDF)||window.jsPDF;
+   if(!J)throw new Error('Gerador de PDF não encontrado.');
+   var pdf=new J({orientation:'p',unit:'mm',format:'a4'});
+   var pw=210,ph=297,margin=5,usableW=pw-2*margin,usableH=ph-2*margin;
+   var sc=Math.min(usableW/canvas.width,usableH/canvas.height);
+   var width=canvas.width*sc,height=canvas.height*sc;
+   pdf.addImage(canvas.toDataURL('image/jpeg',0.92),'JPEG',(pw-width)/2,margin,width,height);
+   var blob=pdf.output('blob');
+   var file=new File([blob],pdfNome,{type:'application/pdf'});
+   var bar=document.getElementById('sharebar'),share=document.getElementById('btnSharePdf'),down=document.getElementById('btnDownloadPdf');
+   function baixar(){var url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=pdfNome;document.body.appendChild(a);a.click();a.remove();setTimeout(function(){URL.revokeObjectURL(url);},60000);}
+   if(pdfModo==='salvar'){baixar();return;}
+   function enviar(){
+    if(!navigator.share||!navigator.canShare||!navigator.canShare({files:[file]})){abrirImpressao();return;}
+    navigator.share({files:[file],title:'Planilha de treino'}).then(function(){if(bar)bar.style.display='none';}).catch(function(err){
+     if(err&&err.name==='AbortError'){if(bar)bar.style.display='none';return;}
+     if(err&&(err.name==='NotAllowedError'||err.name==='InvalidStateError')){if(bar)bar.style.display='block';return;}
+     if(bar)bar.style.display='none';abrirImpressao();
+    });
+   }
+   if(share)share.onclick=enviar;
+   if(down)down.onclick=function(){if(bar)bar.style.display='none';abrirImpressao();};
+   enviar();
+  }).catch(function(err){console.warn('PDF direto indisponível.',err);if(pdfModo==='salvar')alert('Não foi possível salvar o PDF. Confira as bibliotecas locais e tente novamente.');else abrirImpressao();});
+ }).catch(function(err){console.warn('Não foi possível preparar a ficha; abrindo impressão A4.',err);abrirImpressao();});
 };
 <\/script></body></html>`);
  w.document.close();
@@ -14429,15 +15065,15 @@ function criarRegistroAtletasExtras(cliente){
  function categoriaAno(ano){return saSiteCategoryIdForYear(ano);}
  function origem(v){return categoriaAno(identidade(v).ano);}
  function vinculo(v){return estado.map.get(key(v))||null;}
- function ano(v,modulo){if(!estado.ready)return '';const r=vinculo(v);return r&&r[modulo]===true?String(r.ano_destino):identidade(v).ano;}
+ function ano(v,modulo){if(!estado.ready||estado.error)return '';const r=vinculo(v);return r&&r[modulo]===true?String(r.ano_destino):identidade(v).ano;}
  function categoria(v,modulo){return categoriaAno(ano(v,modulo));}
- function extras(cat,modulo){if(!estado.ready)return [];return estado.rows.filter(r=>categoriaAno(r.ano_destino)===cat&&r[modulo]===true);}
- function anos(v,lista,modulo){return estado.ready&&lista.map(String).includes(ano(v,modulo));}
+ function extras(cat,modulo){if(!estado.ready||estado.error)return [];return estado.rows.filter(r=>categoriaAno(r.ano_destino)===cat&&r[modulo]===true);}
+ function anos(v,lista,modulo){return estado.ready&&!estado.error&&lista.map(String).includes(ano(v,modulo));}
  function fotos(v,lista){const orig=identidade(v).ano,r=vinculo(v);return lista.map(String).includes(orig)||!!(estado.ready&&r&&lista.map(String).includes(String(r.ano_destino)));}
  function emit(changed){listeners.forEach(fn=>{try{fn(changed);}catch(e){console.warn('Atualização de extras:',e);}});}
  async function load(force=false){
   if(estado.promise)return estado.promise;
-  if(!force&&estado.ready&&Date.now()-estado.loadedAt<20000)return estado.rows;
+  if(!force&&estado.ready&&!estado.error&&Date.now()-estado.loadedAt<20000)return estado.rows;
   estado.promise=(async()=>{
    try{
     let rows=[];const page=500;
@@ -14468,7 +15104,7 @@ function criarRegistroAtletasExtras(cliente){
 /* Integração principal — nenhum cadastro antigo é importado. */
 function aeIdRow(row){return {nomeCompleto:trabalhoNomeCompleto(row),nascimento:trabalhoNascimento(row),ano:trabalhoAnoAtleta(row),apelido:trabalhoApelido(row)};}
 function aeAtletasCat(cat,modulo){
- if(!AE.estado.ready)return [];
+ if(!AE.estado.ready||AE.estado.error)return [];
  const mapa=new Map();
  trabalhoTodosAtletas().forEach(a=>{if(AE.categoria(a.id,modulo)===cat)mapa.set(AE.key(a.id),a);});
  // Registros cujo atleta não está mais no cadastro não geram atletas fantasmas.
@@ -14491,34 +15127,60 @@ function closeAtletasExtras(){const m=document.getElementById('ae-modal');if(m)m
 
 
 
-function aeEditar(key){const r=AE.estado.map.get(key);if(!r)return;aeEditor={keys:[key],anoDestino:String(r.ano_destino),flags:Object.fromEntries(Object.keys(AE.modulos).map(k=>[k,r[k]===true])),editKey:key,revision:r.revisao};aeRender();}
+function aeEditar(key){const r=AE.estado.map.get(key);if(!r)return;aeEditor={keys:[key],anoDestino:String(r.ano_destino),flags:Object.fromEntries(Object.keys(AE.modulos).map(k=>[k,r[k]===true])),editKey:key,revision:r.revisao,original:saLocalClone(r)};aeRender();}
 function aeRender(){
  const m=document.getElementById('ae-modal');if(!m||m.style.display==='none')return;
  const modulos=AE.modulos,todos=trabalhoTodosAtletas();
  const options=todos.filter(a=>AE.key(a.id)&&(!AE.vinculo(a.id)||aeEditor?.editKey===AE.key(a.id))).map(a=>{const key=AE.key(a.id),selected=aeEditor?.keys.includes(key);return '<tr class="ae-pick-row'+(selected?' ae-picked':'')+'" data-ae-search="'+aeEsc(AE.nome([a.id.apelido,a.id.ano,a.id.nomeCompleto].join(' ')))+'" onclick="aeAlternarLinha(this,event)"><td><input type="checkbox" value="'+aeEsc(key)+'" aria-label="Selecionar '+aeEsc(a.id.apelido||a.id.nomeCompleto)+' — '+aeEsc(a.id.ano)+' — '+aeEsc(a.id.nomeCompleto)+'" '+(selected?'checked ':'')+(aeEditor?.editKey?'disabled ':'')+'onchange="aeSelecionarOpcao(this)"></td><td>'+aeEsc(a.id.apelido||a.id.nomeCompleto)+'</td><td>'+aeEsc(a.id.ano)+'</td><td>'+aeEsc(a.id.nomeCompleto)+'</td></tr>';}).join('');
  const form=aeEditor?`<section class="ae-form"><h3>${aeEditor.editKey?'Editar ano e opções':'Adicionar atletas'}</h3><div class="ae-picker"><label for="ae-search">Atleta(s)</label><input id="ae-search" placeholder="Buscar por apelido, ano ou nome completo" oninput="aeFiltrarOpcoes(this.value)"><div class="ae-picker-scroll" tabindex="0" role="region" aria-label="Lista de atletas"><table id="ae-athletes" class="ae-picker-table"><colgroup><col class="ae-col-check"><col class="ae-col-apelido"><col class="ae-col-ano"><col></colgroup><thead><tr><th scope="col"><span class="ae-sr-only">Selecionar</span></th><th scope="col">Apelido</th><th scope="col">Ano</th><th scope="col">Nome completo</th></tr></thead><tbody>${options}</tbody></table></div><p id="ae-no-matches" ${options?'hidden':''}>Nenhum atleta encontrado.</p></div><label>Ler como atleta do ano<select id="ae-destino" onchange="aeEditor.anoDestino=this.value">${aeAnosDestino().map(y=>`<option value="${y}" ${y===aeEditor.anoDestino?'selected':''}>${y} — ${AE.categorias[AE.categoriaAno(y)]?.label||''}</option>`).join('')}</select></label><p>Marcada: usa o ano escolhido. Desmarcada: usa o ano real. Nenhuma informação do cadastro é alterada.</p><div class="ae-flags">${Object.entries(modulos).map(([k,label])=>`<label><input type="checkbox" data-ae-flag="${k}" ${aeEditor.flags[k]?'checked':''} onchange="aeEditor.flags['${k}']=this.checked">${label}</label>`).join('')}</div><div class="ae-actions"><button type="button" onclick="aeEditor=null;aeRender()">Cancelar</button><button type="button" class="ae-primary" ${aeBusy?'disabled':''} onclick="aeSalvar()">${aeBusy?'Salvando…':'Salvar'}</button></div></section>`:'';
  const rows=AE.estado.rows.map(r=>{const key=encodeURIComponent(r.atleta_key).replace(/'/g,'%27');const effects=Object.entries(modulos).map(([k,label])=>'<span class="'+(r[k]?'ae-on':'ae-off')+'">'+aeEsc(label)+': '+aeEsc(r[k]?r.ano_destino:r.ano)+'</span>').join('');return `<article class="ae-row"><h3>${aeEsc(r.apelido||r.nome_completo)}<small>Ano real ${aeEsc(r.ano)} → ler como ${aeEsc(r.ano_destino)}</small></h3><p>${aeEsc(r.nome_completo)}</p><div class="ae-effects">${effects}</div><div class="ae-actions"><button onclick="aeEditar(decodeURIComponent('${key}'))">Editar opções</button><button ${aeBusy?'disabled':''} onclick="aeRemover(decodeURIComponent('${key}'))">Remover vínculo</button></div></article>`;}).join('');
- m.innerHTML=`<div class="ae-card"><button class="ae-close" aria-label="Fechar" onclick="closeAtletasExtras()">×</button><h2>Atletas Extras</h2><p>Escolha como o atleta será agrupado em cada módulo. Nascimento, idade, cadastro e dados individuais permanecem reais.</p><p><b>Atletas e Convocação:</b> sempre no ano real. <b>Fotos:</b> aparece no ano real e no escolhido, sem duplicar o cadastro.</p>${AE.estado.error?'<div class="ae-error">'+aeEsc(AE.estado.error)+'</div>':''}${!AE.estado.ready?'<p>Carregando os dados locais…</p>':''}<div class="ae-actions"><button onclick="AE.load(true).then(aeRender).catch(aeRender)">Atualizar</button><button class="ae-primary" ${!AE.estado.ready?'disabled':''} onclick="aeNovo()">+ Adicionar atletas</button></div>${form}<div class="ae-list">${rows||(AE.estado.ready?'<p>Nenhum atleta extra cadastrado. Todos permanecem nos anos reais.</p>':'')}</div></div>`;
+ m.innerHTML=`<div class="ae-card"><button class="ae-close" aria-label="Fechar" onclick="closeAtletasExtras()">×</button><h2>Atletas Extras</h2><p>Escolha como o atleta será agrupado em cada módulo. Nascimento, idade, cadastro e dados individuais permanecem reais.</p><p><b>Atletas e Convocação:</b> sempre no ano real. <b>Fotos:</b> aparece no ano real e no escolhido, sem duplicar o cadastro.</p>${AE.estado.error?'<div class="ae-error">'+aeEsc(AE.estado.error)+'</div>':''}${!AE.estado.ready?'<p>Carregando os dados locais…</p>':''}<div class="ae-actions"><button onclick="AE.load(true).then(aeRender).catch(aeRender)">Atualizar</button><button class="ae-primary" ${!AE.estado.ready||AE.estado.error?'disabled':''} onclick="aeNovo()">+ Adicionar atletas</button></div>${form}<div class="ae-list">${rows||(AE.estado.ready?'<p>Nenhum atleta extra cadastrado. Todos permanecem nos anos reais.</p>':'')}</div></div>`;
 }
 function aeFiltrarOpcoes(text){const q=AE.nome(text);let count=0;document.querySelectorAll('#ae-athletes tbody tr').forEach(row=>{row.hidden=!!q&&!row.dataset.aeSearch.includes(q);if(!row.hidden)count++;});const empty=document.getElementById('ae-no-matches');if(empty)empty.hidden=count>0;}
+// As verificações e a gravação da tabela são serializadas nesta aba. Não
+// apagam registros legados ou desconhecidos; duplicatas exigem revisão manual.
+async function aeGravarLocal(values,editKey,original){
+ return saLocalQueueTable('atletas_extras_anos',async()=>{
+  const rows=await saLocalReadTable('atletas_extras_anos');
+  if(editKey){
+   const matches=rows.map((r,i)=>r.atleta_key===editKey?i:-1).filter(i=>i>=0);
+   if(matches.length!==1||JSON.stringify(rows[matches[0]])!==JSON.stringify(original))throw new Error('O vínculo mudou ou há duplicatas. Atualize antes de salvar.');
+   const i=matches[0],n=Number(rows[i].revisao);
+   rows[i]={...rows[i],...values[0],revisao:Number.isSafeInteger(n)&&n>=0?n+1:1};
+  }else{
+   const keys=values.map(v=>v.atleta_key);
+   if(new Set(keys).size!==keys.length||rows.some(r=>keys.includes(r.atleta_key)))throw new Error('Já existe vínculo para um dos atletas. Atualize a lista.');
+   values.forEach(v=>rows.push(saLocalWithId({...v,revisao:1})));
+  }
+  await saLocalWriteTable('atletas_extras_anos',rows);
+ });
+}
+async function aeRemoverLocal(key,original){
+ return saLocalQueueTable('atletas_extras_anos',async()=>{
+  const rows=await saLocalReadTable('atletas_extras_anos');
+  const matches=rows.map((r,i)=>r.atleta_key===key?i:-1).filter(i=>i>=0);
+  if(matches.length!==1||JSON.stringify(rows[matches[0]])!==JSON.stringify(original))throw new Error('O vínculo mudou ou há duplicatas. Atualize antes de remover.');
+  rows.splice(matches[0],1);await saLocalWriteTable('atletas_extras_anos',rows);
+ });
+}
 async function aeSalvar(){
- if(aeBusy||!aeEditor)return;const d=aeEditor,keys=d.keys.slice(),ano=String(d.anoDestino);
+ if(aeBusy||!aeEditor)return;if(!await aeExigir())return;const d=aeEditor;if(!d)return;const keys=d.keys.slice(),ano=String(d.anoDestino);
  if(!keys.length)return alert('Selecione ao menos um atleta.');if(!aeAnosDestino().includes(ano))return alert('Escolha o ano de destino.');
  const all=trabalhoTodosAtletas(),ids=keys.map(k=>all.find(a=>AE.key(a.id)===k));if(ids.some(a=>!a))return alert('Atleta não encontrado no cadastro.');if(ids.some(a=>String(a.id.ano)===ano))return alert('Escolha um ano diferente do ano real dos atletas selecionados.');
  aeBusy=true;aeRender();try{
   const values=ids.map(a=>({atleta_key:AE.key(a.id),nome_completo:a.id.nomeCompleto,nascimento:AE.data(a.id.nascimento),ano:String(a.id.ano),apelido:a.id.apelido||'',ano_destino:ano,...d.flags}));
-  const q=d.editKey?_saData.from('atletas_extras_anos').update(values[0]).eq('atleta_key',d.editKey).eq('revisao',d.revision):_saData.from('atletas_extras_anos').insert(values);
-  const {data,error}=await q.select('*');if(error)throw error;if(!data?.length)throw new Error('O vínculo mudou em outro aparelho. Atualize antes de salvar.');aeEditor=null;await AE.load(true);
+  await aeGravarLocal(values,d.editKey,d.original);aeEditor=null;await AE.load(true);
  }catch(e){alert('Não foi possível salvar. '+e.message);}finally{aeBusy=false;aeRender();}
 }
 async function aeRemover(key){
  if(aeBusy)return;const r=AE.estado.map.get(key);if(!r)return;if(!confirm('Remover somente o vínculo de '+(r.apelido||r.nome_completo)+'? O atleta volta ao ano real. Nenhum dado individual será apagado.'))return;
- aeBusy=true;try{const {data,error}=await _saData.from('atletas_extras_anos').delete().eq('atleta_key',key).eq('revisao',r.revisao).select('atleta_key');if(error)throw error;if(!data?.length)throw new Error('Vínculo alterado em outro aparelho. Atualize.');if(aeEditor?.editKey===key)aeEditor=null;await AE.load(true);}catch(e){alert(e.message);}finally{aeBusy=false;aeRender();}
+ aeBusy=true;try{await aeRemoverLocal(key,r);if(aeEditor?.editKey===key)aeEditor=null;await AE.load(true);}catch(e){alert(e.message);}finally{aeBusy=false;aeRender();}
 }
 function aeRefreshViews(changed){
  let banner=document.getElementById('ae-sync-status');
  if(!banner){banner=document.createElement('div');banner.id='ae-sync-status';banner.className='ae-sync-status';document.body.appendChild(banner);}
  banner.hidden=!AE.estado.error;banner.textContent=AE.estado.error;
+ if(saPortalState.athlete&&!saPortalState.loading){saPortalReaplicarExtras();if(['inicio','trabalhos','planejamento'].includes(saPortalState.view))saPortalRender();}
  if(!changed)return;aeRender();
  const visible=id=>{const e=document.getElementById(id);return e&&e.style.display!=='none';};
  if(visible('relatorio-psrpse-modal'))renderRelatorioPsrPse();
@@ -14528,7 +15190,7 @@ function aeRefreshViews(changed){
  if(visible('relatorio-visualizacao-modal'))renderRelatorioVisualizacaoDocumento();
  if(document.querySelector('#testes-screen.active'))aeAtualizarTestesSemGravar();
  if(visible('monitoramento-carga-modal'))renderMonitoramentoCargaModal();
- if(visible('fotos-atletas-modal')&&window.__aeFotoCategoria)renderFotosCategoria(window.__aeFotoCategoria);
+ if(visible('fotos-atletas-modal')){if(window.__aeFotoCategoria)renderFotosCategoria(window.__aeFotoCategoria);else renderFotosCategorias();}
  if(document.getElementById('grupo-categoria-select'))calcularMediaCategoria();
  ['trabalho','planejamento'].forEach(mod=>Object.keys(AE.categorias).forEach(c=>{const el=document.getElementById((mod==='trabalho'?'td-count-':'ps-count-')+c);if(el){el.textContent=aeAtletasCat(c,mod).length;const panel=el.closest('.td-cat-panel');const extras=panel?.querySelector('.td-extras');if(extras)extras.outerHTML=mod==='trabalho'?renderTrabalhoExtrasHTML(c):renderPlanejamentoExtrasHTML(c);const count=panel?.querySelector('[data-ae-extra-count]');if(count)count.textContent=aeExtrasCat(c,mod).length;}}));
 }
@@ -14804,13 +15466,13 @@ function manualConvocacaoFecharCampo(){
  manualConvocacaoCapturarCampo();
  const modal=document.getElementById('campo-convocacao-manual-modal');if(modal)modal.style.display='none';
 }
-function manualConvocacaoImprimirCampo(){
+function manualConvocacaoImprimirCampo(somenteImprimir=false){
  const modal=document.getElementById('campo-convocacao-manual-modal');
  const card=modal?.querySelector('.campo-card');
  if(!modal||!card)return;
  manualConvocacaoCapturarCampo();
- if(typeof saIsMobile==='function'&&saIsMobile()&&typeof saCompartilharOuSalvarPDF==='function'){
-  saCompartilharOuSalvarPDF(card,'convocacao_manual_vbolonheze_sports','landscape','convocacao-campo','Convocação Manual VBolonheze Sports');
+ if(!somenteImprimir&&typeof saIsMobile==='function'&&saIsMobile()&&typeof saCompartilharOuSalvarPDF==='function'){
+  saCompartilharOuSalvarPDF(card,'convocacao_manual_vbolonheze_sports','landscape','convocacao-campo','Convocação Manual VBolonheze Sports',()=>manualConvocacaoImprimirCampo(true));
   return;
  }
  const layout=document.createElement('div');layout.id='print-convocacao-layout';
@@ -14941,7 +15603,7 @@ function manualConvocacaoAbrirArbitragem(){
  const st=manualConvocacaoObterEstado();manualConvocacaoCapturarCampo();
  const lista=[...st.atletas].sort((a,b)=>String(a.nome).localeCompare(String(b.nome),'pt-BR'));
  const logo=saSiteEscape(saSiteCurrentLogoSrc());
- const w=window.open('','_blank','width=800,height=800');if(!w){alert('Permita pop-ups para imprimir a ficha de arbitragem.');return;}
+ const w=saOpenPrintWindow('_blank', 'width=800,height=800');if(!w){alert('Permita pop-ups para imprimir a ficha de arbitragem.');return;}
  const linhas=lista.map(a=>`<tr><td>${manualConvocacaoEscapar(a.numero)}</td><td>${manualConvocacaoEscapar(a.nome)}</td><td></td><td></td></tr>`).join('');
  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Arbitragem — Convocação Manual</title><style>@page{size:A4 portrait;margin:8mm}*{box-sizing:border-box}body{font-family:Arial;margin:0}.vb-brand-corner{position:absolute;top:4px;right:6px;z-index:8;display:inline-block;padding:3px 7px;border:1px solid #40b8a8;border-radius:999px;background:#fff;color:#173b59;font:800 9px/1.2 Arial,sans-serif;white-space:nowrap}.ficha{position:relative;border:1px solid #111;min-height:0;height:auto}.cab{height:38mm;border-bottom:1px solid #111;display:flex;align-items:center;padding:8px 40mm 8px 20px;gap:100px}.cab img{width:32mm;height:32mm;object-fit:contain}.cab h1{font-size:25px;margin:0}.tab{width:100%;border-collapse:collapse;table-layout:fixed;font-size:10px}.tab th{text-align:left;border-bottom:1px solid #111;padding:4px}.tab td{height:15px;border-bottom:1px dotted #111;border-right:1px dotted #111;padding:2px 4px}.tab th:nth-child(1),.tab td:nth-child(1){width:11%;font-weight:bold}.tab th:nth-child(2),.tab td:nth-child(2){width:46%;font-weight:bold}.tab th:nth-child(3),.tab td:nth-child(3){width:23%}.tab th:nth-child(4),.tab td:nth-child(4){width:20%}</style></head><body><div class="ficha"><div class="vb-brand-corner">VBolonheze Sports</div><div class="cab"><img src="${logo}"><h1>ARBITRAGEM — CONVOCAÇÃO MANUAL</h1></div><table class="tab"><thead><tr><th>Número</th><th>Nome Completo</th><th>Apelido</th><th>Data Nasc.</th></tr></thead><tbody>${linhas}</tbody></table></div><script>window.onload=()=>setTimeout(()=>window.print(),500)<\/script></body></html>`);
  w.document.close();
@@ -14955,7 +15617,147 @@ function manualConvocacaoAbrirMinutagem(){
  const linha=x=>`<tr><td>${manualConvocacaoEscapar(x.n)}</td><td>${manualConvocacaoEscapar(x.nome)}</td><td></td><td class="box"></td><td class="box"></td><td class="tempo-box"></td><td class="minuto"></td><td class="tempo-box"></td><td></td><td></td><td class="box"></td><td class="box"></td></tr>`;
  const supl=suplentes.map(x=>`<tr><td>${manualConvocacaoEscapar(x.n)}</td><td>${manualConvocacaoEscapar(x.nome)}</td></tr>`).join('');
  const logo=saSiteEscape(saSiteCurrentLogoSrc());
- const w=window.open('','_blank','width=1100,height=800');if(!w){alert('Permita pop-ups para imprimir a minutagem.');return;}
+ const w=saOpenPrintWindow('_blank', 'width=1100,height=800');if(!w){alert('Permita pop-ups para imprimir a minutagem.');return;}
  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Minutagem — Convocação Manual</title><style>@page{size:A4 landscape;margin:10mm}*{box-sizing:border-box}body{font-family:Arial;margin:0;font-size:12px;position:relative}.vb-brand-corner{position:absolute;top:1px;right:1px;z-index:8;display:inline-block;padding:3px 7px;border:1px solid #40b8a8;border-radius:999px;background:#fff;color:#173b59;font:800 9px/1.2 Arial,sans-serif;white-space:nowrap}.head{height:92px;display:flex;align-items:center;justify-content:center;gap:35px}.head img{width:82px}.sq{width:64px;height:38px;border:3px solid #111}.x{font-size:34px;font-weight:bold}.adv{font-size:22px;font-weight:bold}.tbl{width:100%;border-collapse:collapse;table-layout:fixed}.tbl th{text-align:center;height:23px}.tbl td{height:18px;border:1px solid #111;padding:1px 4px}.tbl td:nth-child(1){width:52px;text-align:center;border-right:0}.tbl td:nth-child(2){width:180px;text-align:left}.tbl td:nth-child(3){width:55px}.tbl td:nth-child(4),.tbl td:nth-child(5),.tbl td:nth-child(9),.tbl td:nth-child(10){width:62px}.tbl td.box,.tbl td.tempo-box,.tbl td.minuto{border:1px solid #111!important;background:#fff;height:16px}.tbl th:nth-child(1),.tbl td:nth-child(1){font-size:10px!important;width:32px!important;min-width:32px!important;max-width:32px!important;text-align:center!important}.tbl td:nth-child(7),.tbl th:nth-child(7){text-align:center!important}.tbl th:nth-child(3),.tbl td:nth-child(3),.tbl th:nth-child(10),.tbl td:nth-child(10){width:42px!important;min-width:42px!important;max-width:42px!important;padding:1px!important;text-align:center!important;white-space:nowrap}.tbl th:nth-child(4),.tbl td:nth-child(4),.tbl th:nth-child(5),.tbl td:nth-child(5),.tbl th:nth-child(11),.tbl td:nth-child(11),.tbl th:nth-child(12),.tbl td:nth-child(12){width:40px!important;min-width:40px!important;max-width:40px!important;padding:1px!important;text-align:center!important;white-space:nowrap}.tbl th:nth-child(6),.tbl td:nth-child(6),.tbl th:nth-child(8),.tbl td:nth-child(8){width:32px!important;min-width:32px!important;max-width:32px!important;padding:1px!important;text-align:center!important;white-space:nowrap}.tbl th:nth-child(7),.tbl td:nth-child(7){width:58px!important;min-width:58px!important;max-width:58px!important;text-align:center!important}.ca{background:#ff0}.cv{color:red}.bar{background:#c00;color:#fff;text-align:center;font-weight:bold;height:18px}.bottom{display:grid;grid-template-columns:240px 1fr;gap:60px}.sup td{height:15px;border-bottom:1px solid #111;border-right:2px dotted #111}.info{margin-top:15px;font-size:20px;text-align:center}.check{display:inline-block;width:36px;height:34px;border:2px solid #e33;vertical-align:middle;margin:8px 15px}.notes{border:3px solid #111;height:90px;margin-top:0;padding:4px;font-size:12px}</style></head><body><div class="vb-brand-corner">VBolonheze Sports</div><div class="head"><img src="${logo}"><span class="sq"></span><span class="x">X</span><span class="sq"></span><span class="adv">${manualConvocacaoEscapar(adv||'Adversário')}</span></div><table class="tbl"><thead><tr><th>Número</th><th>Titulares</th><th>Gols</th><th class="ca">C.A.</th><th class="cv">C.V.</th><th>1º</th><th>Minuto</th><th>2º</th><th>Suplentes</th><th>Gols</th><th class="ca">C.A.</th><th class="cv">C.V.</th></tr></thead><tbody>${titulares.map(linha).join('')}<tr><td colspan="12" class="bar">Suplentes</td></tr></tbody></table><div class="bottom"><table class="sup"><tbody>${supl}</tbody></table><div><div class="info"><b>Data:</b> ${manualConvocacaoEscapar(data||'____/____/______')}<br><span class="check"></span> Casa <span class="check"></span> Fora</div><div class="notes">Informações adicionais</div></div></div><script>window.onload=()=>setTimeout(()=>window.print(),500)<\/script></body></html>`);
  w.document.close();
+}
+
+/* === FICHA INDIVIDUAL DO ATLETA — leitura local, sem alterar o cadastro === */
+let saFichaState={index:null,modo:'simplificada',temporada:new Date().getFullYear(),request:0,dados:null,plano:null,rascunho:null};
+function saFichaEsc(v){return saSiteEscape(v??'');}
+function saFichaNum(v){if(v===null||v===undefined||String(v).trim()==='')return null;let n=Number(String(v).replace('%','').replace(',','.'));return Number.isFinite(n)?n:null;}
+function saFichaMedia(values){const v=values.filter(x=>Number.isFinite(x));return v.length?v.reduce((a,b)=>a+b,0)/v.length:null;}
+function saFichaFormat(v,d=1){return Number.isFinite(v)?v.toFixed(d).replace('.',','):'—';}
+function saFichaIdentidade(row){return aeIdRow(row||{});}
+function saFichaAnoData(v){const iso=saPortalDateISO(v);return iso?iso.slice(0,4):'';}
+function saFichaRowAtleta(r,id){const a=AE.key(id);return !!a&&a===AE.key(r);}
+function saFichaIdentidadeUnica(id){const k=AE.key(id);return !!k&&excelData.filter(r=>AE.key(saFichaIdentidade(r))===k).length===1;}
+function saFichaAvaliacoes(row,ano){
+ const out=[];
+ for(let n=1;n<=20;n++){
+  const linha=relatoriosLinha(row,n),data=convertExcelDate(relatoriosValorAvaliacao(row,'Data',n));
+  if(!['peso','altura','gordura','distancia','melhorSalto','aceleracao','velocidade','agilidade'].some(k=>saFichaNum(linha[k])!==null))continue;
+  if(saFichaAnoData(data)!==String(ano))continue;
+  out.push({eval:n,label:data&&data!=='-'?data:'Aval. '+n,...linha});
+ }
+ return out.sort((a,b)=>relatoriosDataSort(a.label)-relatoriosDataSort(b.label)||a.eval-b.eval);
+}
+function saFichaGraficos(avals,index,key,titulo,unidade,cor='#1677cb'){
+ const cat=AE.categoria(saFichaIdentidade(excelData[index]),'fisico');
+ const grupo=cat?excelData.filter(r=>AE.categoria(saFichaIdentidade(r),'fisico')===cat):[];
+ const pts=avals.map(a=>({label:'AV'+a.eval,valor:saFichaNum(a[key]),media:saFichaMedia(grupo.map(r=>saFichaAnoData(convertExcelDate(relatoriosValorAvaliacao(r,'Data',a.eval)))===String(saFichaState.temporada)?saFichaNum(relatoriosLinha(r,a.eval)[key]):null))})).filter(x=>x.valor!==null);
+ if(!pts.length)return '';
+ return saFichaChart(titulo,pts,unidade,cor);
+}
+function saFichaChart(titulo,pts,unidade,cor){
+ const w=500,h=158,l=34,r=20,t=25,b=31,all=pts.flatMap(p=>[p.valor,p.media]).filter(v=>Number.isFinite(v));
+ if(!all.length)return '';
+ let min=Math.min(...all),max=Math.max(...all);if(min===max){min-=1;max+=1;}const pad=(max-min)*.15;min-=pad;max+=pad;
+ const x=i=>pts.length===1?w/2:l+i*(w-l-r)/(pts.length-1),y=n=>t+(max-n)*(h-t-b)/(max-min);
+ const path=(key)=>{let parts=[],drawing=false;pts.forEach((p,i)=>{if(!Number.isFinite(p[key])){drawing=false;return;}parts.push((drawing?'L':'M')+x(i).toFixed(1)+','+y(p[key]).toFixed(1));drawing=true;});return parts.join(' ')};
+ const lines=[0,1,2,3].map(i=>`<line x1="${l}" y1="${t+i*(h-t-b)/3}" x2="${w-r}" y2="${t+i*(h-t-b)/3}" stroke="#e4e9ef"/>`).join('');
+ const ptsSvg=pts.map((p,i)=>`<text x="${x(i)}" y="${h-15}" text-anchor="middle" fill="#54657c" font-size="9">${saFichaEsc(p.label)}</text>${Number.isFinite(p.valor)?`<circle cx="${x(i)}" cy="${y(p.valor)}" r="3.5" fill="${cor}" stroke="#fff"/><text x="${x(i)}" y="${y(p.valor)-7}" text-anchor="middle" font-size="9" font-weight="bold" fill="#1c2d3e">${saFichaEsc(saFichaFormat(p.valor,titulo.toLowerCase().includes('distância')?0:2))}${saFichaEsc(unidade)}</text>`:''}${Number.isFinite(p.media)?`<circle cx="${x(i)}" cy="${y(p.media)}" r="2.5" fill="#8ca1bb"/>`:''}`).join('');
+ return `<article class="fc-chart"><h4>${saFichaEsc(titulo)}</h4><svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Evolução: ${saFichaEsc(titulo)}">${lines}<path d="${path('media')}" fill="none" stroke="#899eb5" stroke-width="2" stroke-dasharray="5 4"/><path d="${path('valor')}" fill="none" stroke="${cor}" stroke-width="2.5"/>${ptsSvg}</svg><div class="fc-chart-legend"><span style="color:${cor}">━ Atleta</span><span>Média do grupo ┄</span></div></article>`;
+}
+function saFichaCapturarRascunho(){
+ if(saFichaState.modo!=='completa')return;
+ const c=document.getElementById('fc-comentario'),f=document.getElementById('fc-foco');
+ if(c&&f)saFichaState.rascunho={comentario:c.value,foco:f.value};
+}
+function saFichaAtualizarAbas(){
+ document.querySelectorAll('[data-ficha-modo]').forEach(b=>{const ativo=b.dataset.fichaModo===saFichaState.modo;b.classList.toggle('active',ativo);b.setAttribute('aria-pressed',String(ativo));});
+ const wide=document.querySelector('#fichaModal .modal-container');if(wide)wide.classList.toggle('sa-ficha-wide',saFichaState.modo==='completa');
+ const controls=document.getElementById('sa-ficha-full-controls');if(controls)controls.hidden=saFichaState.modo!=='completa';const save=document.getElementById('sa-ficha-save-plan');if(save)save.hidden=saFichaState.modo!=='completa';
+}
+async function saFichaMudarModo(modo){
+ if(!['simplificada','completa'].includes(modo)||saFichaState.index===null)return;
+ saFichaCapturarRascunho();saFichaState.modo=modo;saFichaAtualizarAbas();
+ if(modo==='simplificada'){saFichaState.request++;saFichaRenderSimplificada(saFichaState.index);return;}
+ await saFichaCarregarCompleta();
+}
+async function saFichaMudarTemporada(valor){
+ const n=Number(valor);if(!Number.isInteger(n)||n<1900||n>2100){alert('Informe uma temporada entre 1900 e 2100.');return;}
+ saFichaCapturarRascunho();saFichaState.temporada=n;await saFichaCarregarCompleta();
+}
+async function saFichaCarregarCompleta(){
+ saFichaCapturarRascunho();
+ const index=saFichaState.index,row=excelData[index];if(!row)return;
+ const estado=saFichaState,req=++saFichaState.request,body=document.getElementById('fichaModalBody');
+ body.innerHTML='<div class="fc-loading" role="status">Carregando dados locais da ficha completa…</div>';
+ const ler=async table=>{const {data,error}=await _saData.from(table).select('*');if(error)throw error;return data||[];};
+ const fontes=await Promise.allSettled([AE.load(true),ler('jogos'),ler('respostas_diarias'),ler('avaliacao_diaria_notas'),Promise.resolve(row.__saFichaPlanoV1??null)]);
+ if(saFichaState!==estado||req!==saFichaState.request||saFichaState.modo!=='completa'||excelData[index]!==row)return;
+ const falhas=[];['Atletas Extras','jogos','respostas diárias','avaliação diária','plano individual'].forEach((nome,i)=>{if(fontes[i].status==='rejected')falhas.push(nome)});
+ const planoRaw=fontes[4].status==='fulfilled'?fontes[4].value:null;
+ const planoValido=planoRaw===null||(typeof planoRaw==='object'&&!Array.isArray(planoRaw));
+ if(!planoValido)falhas.push('plano individual');
+ const plano=planoValido?planoRaw:null;
+ if(!saFichaState.rascunho&&fontes[4].status==='fulfilled'){saFichaState.rascunho={comentario:String(plano?.comentario||''),foco:String(plano?.foco||'')};saFichaState.plano=plano?saLocalClone(plano):null;}
+ if(!saFichaState.rascunho)saFichaState.rascunho={comentario:'',foco:''};
+ saFichaState.dados={falhas,extrasOk:fontes[0].status==='fulfilled',jogos:fontes[1].status==='fulfilled'?fontes[1].value:null,respostas:fontes[2].status==='fulfilled'?fontes[2].value:null,notas:fontes[3].status==='fulfilled'?fontes[3].value:null,planoOk:fontes[4].status==='fulfilled'&&planoValido};
+ saFichaRenderCompleta();
+}
+function saFichaRenderCompleta(){
+ const s=saFichaState,row=excelData[s.index],id=saFichaIdentidade(row),data=s.dados,ano=String(s.temporada),key=saFichaIdentidadeUnica(id)?AE.key(id):'';
+ if(!row||!data)return;
+ const avals=saFichaAvaliacoes(row,ano),catFis=data.extrasOk?AE.categoria(id,'fisico'):'',catAvd=data.extrasOk?AE.categoria(id,'avd'):'';
+ const catLabel=data.extrasOk?(AE.categorias[catFis]?.label||saSiteCategoryLabelForYear(id.ano)):'Categoria indisponível';
+ const respostas=(data.respostas||[]).filter(r=>key&&saFichaRowAtleta(r,id)&&saFichaAnoData(r.data)===ano);
+ const pre=field=>saFichaMedia(respostas.map(r=>{const v=prePosJogoObjeto(r.pre_jogo)[field];return prePosJogoNotaValida(v)?Number(v):null}));
+ const pos=saFichaMedia(respostas.map(r=>{const o=prePosJogoObjeto(r.pos_jogo);return o.status!=='nao_entrou'&&prePosJogoNotaValida(o.valor)?Number(o.valor):null}));
+ const jogos=(data.jogos||[]).filter(j=>saFichaAnoData(j.dados?.data_iso||j.dados?.data)===ano).map(j=>({j,a:(j.dados?.atletas||[]).find(x=>key&&saFichaRowAtleta(x,id))})).filter(x=>x.a&&Number(x.a.minutos)>0);
+ const jogoStats={jogos:jogos.length,minutos:0,gols:0,amarelo:0,vermelho:0,vitorias:0,empates:0,derrotas:0,semPlacar:0};
+ jogos.forEach(({j,a})=>{for(const k of ['minutos','gols','amarelo','vermelho'])jogoStats[k]+=Number(a[k])||0;const placar=j.dados?.placar||{},v=saFichaNum(placar.sistema_aberto),o=saFichaNum(placar.adversario);if(v!==null&&o!==null)jogoStats[v>o?'vitorias':v<o?'derrotas':'empates']++;else jogoStats.semPlacar++;});
+ const notasTemporada=(data.notas||[]).filter(r=>saFichaAnoData(r.data)===ano);
+ const grupoNotas=catAvd?aeAvdNotasParaCategoria(notasTemporada,catAvd):[];
+ // Se categoria não estiver configurada, ainda é possível ler os registros individuais.
+ const individuais=(catAvd?grupoNotas:notasTemporada).filter(r=>aeNotaKey(r)===key&&key);
+ const unicos=new Map();individuais.forEach(r=>{const d=saPortalDateISO(r.data),p=unicos.get(d);if(d&&(!p||String(r.atualizado||r.atualizado_em||'')>String(p.atualizado||p.atualizado_em||'')))unicos.set(d,r)});
+ const notas=[...unicos.values()],validas=notas.map(r=>saFichaNum(r.nota)).filter(n=>n!==null&&n>=1&&n<=5),faltas=notas.filter(r=>saFichaNum(r.nota)===0).length;
+ const anular=new Set(notas.filter(r=>r.anular_pse===true).map(r=>saPortalDateISO(r.data)));
+ const psr=saFichaMedia(respostas.map(r=>{let n=rppNotaPsrNum({...r,psr:saPortalJson(r.psr)});return n!==null&&n>=0&&n<=22?n:null}));
+ const pse=saFichaMedia(respostas.map(r=>{if(anular.has(saPortalDateISO(r.data)))return null;let p=r.pse;if(typeof p==='string'&&p.trim().startsWith('{'))p=saPortalJson(p);let n=rppNotaPseNum({...r,pse:p});return n!==null&&n>0&&n<=10?n:null}));
+ const mesLabel=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+ const meses=[];for(let m=1;m<=12;m++){const prefix=ano+'-'+String(m).padStart(2,'0'),own=saFichaMedia(notas.filter(r=>String(r.data).startsWith(prefix)).map(r=>{let v=saFichaNum(r.nota);return v!==null&&v>=1&&v<=5?v:null})),grupo=saFichaMedia(grupoNotas.filter(r=>String(r.data).startsWith(prefix)).map(r=>{let v=saFichaNum(r.nota);return v!==null&&v>=1&&v<=5?v:null}));if(own!==null)meses.push({label:mesLabel[m-1],valor:own,media:grupo});}
+ const metricas=[['Altura','altura',' m'],['Peso','peso',' kg'],['% de gordura','gordura','%'],['Resistência · distância','distancia',' m'],['Potência','melhorSalto',' m'],['Aceleração final','aceleracao',' s'],['Velocidade final','velocidade',' s'],['Agilidade','agilidade',' s']];
+ const ultimo=k=>{for(let i=avals.length-1;i>=0;i--){let v=saFichaNum(avals[i][k]);if(v!==null)return v;}return null;};
+ const fichaVal=(v,d=1,un='')=>Number.isFinite(v)?saFichaFormat(v,d)+un:'—';
+ const card=(label,value)=>`<div class="fc-stat"><small>${saFichaEsc(label)}</small><strong>${saFichaEsc(value)}</strong></div>`;
+ const barras=[['Confiança pré-jogo',pre('confianca')],['Nervosismo pré-jogo',pre('nervosismo')],['Rendimento pós-jogo',pos]].map(([n,v])=>`<div class="fc-bar"><span>${saFichaEsc(n)}</span><div><i style="width:${v===null?0:Math.max(0,Math.min(100,v/5*100))}%"></i></div><b>${v===null?'—':saFichaFormat(v)+' / 5'}</b></div>`).join('');
+ const metricCards=metricas.map(([n,k,u])=>card(n,fichaVal(ultimo(k),k==='distancia'?0:2,u))).join('');
+ const group=catFis?excelData.filter(r=>AE.categoria(saFichaIdentidade(r),'fisico')===catFis):[];
+ const lines=metricas.slice(2).map(([label,k,u])=>{const cells=avals.map(a=>{const v=saFichaNum(a[k]),mean=saFichaMedia(group.map(r=>saFichaAnoData(convertExcelDate(relatoriosValorAvaliacao(r,'Data',a.eval)))===ano?saFichaNum(relatoriosLinha(r,a.eval)[k]):null));return `<td><strong>${saFichaEsc(fichaVal(v,k==='distancia'?0:2,u))}</strong><small>Média: ${saFichaEsc(fichaVal(mean,k==='distancia'?0:2,u))}</small></td>`}).join('');return `<tr><th>${saFichaEsc(label)}</th>${cells}</tr>`}).join('');
+ const graphs1=metricas.slice(0,2).map(([n,k,u])=>saFichaGraficos(avals,s.index,k,n,u,'#00947f')).join('');
+ const graphs2=metricas.slice(2).map(([n,k,u])=>saFichaGraficos(avals,s.index,k,n,u)).join('');
+ const foto=saLocalSafeImageUrl(relatoriosValorColunaFlex(row,['foto'])||'',fotosPlaceholderMiniatura()),nome=relatoriosNomeAtleta(row),posicao=valorPosicaoPrincipalAtleta(row)||'—';
+ const erro=data.falhas.length?`<div class="fc-alert" role="alert">Não foi possível carregar: ${saFichaEsc(data.falhas.join(', '))}. Os itens dependentes aparecem como indisponíveis; tente novamente.</div>`:'';
+ const noKey=!key?'<div class="fc-alert">Para localizar registros individuais, o atleta precisa ter nome completo e data de nascimento únicos no cadastro.</div>':'';
+ const indisponivel='Indisponível';
+ const table=avals.length?`<div class="fc-table-wrap"><table class="fc-table"><thead><tr><th>Teste</th>${avals.map(a=>`<th>AV${a.eval}<small>${saFichaEsc(a.label)}</small></th>`).join('')}</tr></thead><tbody>${lines}</tbody></table></div>`:'<p class="fc-empty">Nenhuma avaliação física com data nesta temporada.</p>';
+ document.getElementById('fichaModalBody').innerHTML=`<div id="fichaExportContent" class="fc-report"><header class="fc-banner"><small>VBOLONHEZE SPORTS · FICHA COMPLETA DO ATLETA</small><h2>DESENVOLVIMENTO ESPORTIVO</h2><p>Dados locais disponíveis · Temporada ${saFichaEsc(ano)}</p></header><div class="fc-athlete"><img src="${saFichaEsc(foto)}" alt="Foto do atleta"><div><small>FICHA INDIVIDUAL DO ATLETA</small><h2>${saFichaEsc(nome)}</h2><p>${saFichaEsc(id.nomeCompleto)}<br>Nasc. ${saFichaEsc(id.nascimento||'—')} · ${saFichaEsc(posicao)}</p></div><strong class="fc-category">${saFichaEsc(catLabel)}<small>Ano ${saFichaEsc(id.ano||'—')}</small></strong></div>${erro}${noKey}
+ <section class="fc-section"><h3>Temporada e participação <small>${data.jogos&&key?jogos.length+' jogo(s) com minutagem registrada':indisponivel}</small></h3><div class="fc-stats">${[['Jogos','jogos',''],['Minutagem total','minutos',' min'],['Gols','gols',''],['Cartões',null,''],['Vitórias','vitorias',''],['Empates','empates',''],['Derrotas','derrotas','']].map(([n,k,u])=>card(n,!data.jogos||!key?indisponivel:k===null?jogoStats.amarelo+' CA · '+jogoStats.vermelho+' CV':jogoStats[k]+u)).join('')}</div>${jogoStats.semPlacar?'<p class="fc-footnote">Alguns resultados não possuem placar e não foram somados em vitórias, empates ou derrotas.</p>':''}</section>
+ <section class="fc-section"><h3>Pré / Pós jogo</h3>${data.respostas&&key?barras:'<p class="fc-empty">Dados indisponíveis.</p>'}</section>
+ <section class="fc-section"><h3>Indicadores internos</h3><div class="fc-stats">${card('Faltas',data.notas&&key?String(faltas):indisponivel)}${card('Nota do treinador',data.notas&&key?fichaVal(saFichaMedia(validas),1,' / 5'):indisponivel)}${card('PSE · esforço',data.respostas&&data.notas&&key?fichaVal(pse,1,' / 10'):indisponivel)}${card('PSR',data.respostas&&key?fichaVal(psr,1,' / 22'):indisponivel)}</div></section>
+ <section class="fc-section"><h3>Nota do treinador por mês</h3>${meses.length?saFichaChart('Média mensal de notas válidas',meses,'','#176b62'):'<p class="fc-empty">Nenhuma nota válida nesta temporada.</p>'}<p class="fc-footnote">Notas de 1 a 5; faltas, DM e sem nota não entram na média. Grupo conforme a categoria atual em Avaliação Diária.</p></section>
+ <section class="fc-section"><h3>Antropometria e testes físicos <small>${avals.length} avaliação(ões) com data</small></h3><div class="fc-stats">${metricCards}</div></section>
+ <section class="fc-section"><h3>Testes físicos · atleta × média do grupo</h3>${table}<p class="fc-footnote">Médias da categoria atual do Relatório Físico, por número de avaliação e temporada. Avaliações sem data ficam fora da temporada. “—” indica ausência de dados.</p></section>
+ <section class="fc-section"><h3>Evolução antropométrica</h3><div class="fc-charts">${graphs1||'<p class="fc-empty">Nenhuma medição disponível nesta temporada.</p>'}</div></section>
+ <section class="fc-section"><h3>Evolução dos testes</h3><div class="fc-charts">${graphs2||'<p class="fc-empty">Nenhum teste disponível nesta temporada.</p>'}</div></section>
+ <section class="fc-section"><h3>Plano individual</h3><div class="fc-plan"><label>Comentário da comissão<textarea id="fc-comentario" maxlength="5000" placeholder="Escreva o comentário da comissão…">${saFichaEsc(s.rascunho.comentario)}</textarea><div class="fc-plan-print"></div></label><label>Foco do próximo ciclo<textarea id="fc-foco" maxlength="5000" placeholder="Defina o foco prioritário…">${saFichaEsc(s.rascunho.foco)}</textarea><div class="fc-plan-print"></div></label></div><p class="fc-footnote">O plano só é gravado neste dispositivo ao clicar em Salvar plano.</p></section><footer class="fc-footer">Ficha gerada em ${saFichaEsc(new Date().toLocaleDateString('pt-BR'))} · Dados locais do Sistema Aberto.</footer></div>`;
+}
+async function saFichaSalvarPlano(){
+ if(saFichaState.modo!=='completa'||!saFichaState.dados?.planoOk)return alert('Não foi possível carregar o plano para salvar. O conteúdo anterior foi preservado.');
+ saFichaCapturarRascunho();const s=saFichaState,index=s.index,row=excelData[index];
+ const old=s.plano?saLocalClone(s.plano):null,rascunho={...s.rascunho},btn=document.getElementById('sa-ficha-save-plan');if(btn?.disabled)return;if(btn)btn.disabled=true;
+ let novoRow=null;
+ try{
+  if(!row||row!==s.rowRef||JSON.stringify(row.__saFichaPlanoV1??null)!==JSON.stringify(old))throw new Error('O cadastro ou o plano mudou desde a abertura. Feche e abra a ficha novamente.');
+  const plano={...(old||{}),...rascunho,atualizado_em:new Date().toISOString()};
+  novoRow=saLocalClone(row);novoRow.__saFichaPlanoV1=plano;excelData[index]=novoRow;
+  if(!await saveToStorage())throw new Error('Confira o armazenamento e tente novamente.');
+  if(saFichaState===s){s.rowRef=excelData[index];s.plano=saLocalClone(plano);alert('Plano individual salvo neste dispositivo.');}
+ }catch(e){
+  if(novoRow&&excelData[index]===novoRow)excelData[index]=row;
+  console.error(e);alert('Não foi possível salvar o plano. '+(e.message||'Tente novamente.'));
+ }finally{if(btn)btn.disabled=false;}
 }
