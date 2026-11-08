@@ -6412,3 +6412,114 @@ body.modern-v3 .sa-header-status-text {
 .fc-pdf-export .fc-charts .fc-chart svg{height:75px!important}
 
 .fc-pdf-export .fc-plan-long{display:block!important}.fc-pdf-export .fc-plan-long label{margin-bottom:6px}.fc-plan-chunk{white-space:pre-wrap;overflow-wrap:anywhere;break-inside:avoid;page-break-inside:avoid}
+
+/* Painel de edição de peças: compacto no campo e acessível também por toque. */
+.tp-ctx{box-sizing:border-box!important;position:fixed!important;display:none;width:min(360px,calc(100vw - 16px));min-width:0!important;max-height:calc(100dvh - 16px);overflow-y:auto;overflow-x:hidden;padding:8px!important;border:1px solid #42516a!important;border-radius:9px!important;background:#1d2a3d!important;color:#fff!important;box-shadow:0 12px 32px #0009;z-index:100003!important;font:500 12px/1.3 system-ui,Arial,sans-serif}
+.tp-ctx *{box-sizing:border-box}
+.tp-ctx .tp-ctx-top{height:18px;display:flex;align-items:center;justify-content:center;position:relative}
+.tp-ctx .tp-ctx-grip{color:#8d9bad;font-size:15px;line-height:1;cursor:grab;touch-action:none;user-select:none;padding:3px 16px}
+.tp-ctx button.tp-ctx-close{position:absolute;right:0;top:-4px;width:28px;height:26px;padding:0;color:#b6c4d5;font-size:20px;line-height:1;text-align:center}
+.tp-ctx .tp-ctx-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:5px 0;min-height:26px}
+.tp-ctx .tp-ctx-label{color:#9fb0c6;font-size:11px;font-weight:500;white-space:nowrap}
+.tp-ctx .tp-ctx-choices{display:flex;align-items:center;flex-wrap:wrap;gap:2px;min-width:0}
+.tp-ctx button.tp-ctx-choice,.tp-ctx button.tp-ctx-edit,.tp-ctx button.tp-ctx-turn{display:inline-flex;align-items:center;justify-content:center;width:auto;min-height:27px;padding:5px 7px;border:0;border-radius:8px;background:transparent;color:#fff;font:600 11px/1.2 system-ui,Arial,sans-serif;white-space:nowrap}
+.tp-ctx button.tp-ctx-choice.is-active{background:#23a86b;color:#061e13}
+.tp-ctx button.tp-ctx-choice:hover,.tp-ctx button.tp-ctx-edit:hover,.tp-ctx button.tp-ctx-turn:hover,.tp-ctx .tp-ctx-actions button:hover{background:#34465d;color:#fff}
+.tp-ctx .tp-ctx-number{width:42px;height:27px;background:#101b2c;color:#fff;border:1px solid #374962;border-radius:4px;padding:3px 5px;font:12px system-ui,Arial,sans-serif}
+.tp-ctx .tp-ctx-swatches{display:flex;align-items:center;gap:5px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:thin;padding:3px 2px 5px}
+.tp-ctx button.tp-ctx-swatch{display:block;flex:0 0 20px;width:20px;height:20px;min-width:20px;padding:0!important;border:0;border-radius:50%;background:var(--swatch)!important;box-shadow:0 0 0 1px #ffffff36;cursor:pointer}
+.tp-ctx button.tp-ctx-swatch.is-active{outline:2px solid #fff;outline-offset:1px}
+.tp-ctx button.tp-ctx-swatch:focus-visible,.tp-ctx button:focus-visible,.tp-ctx input:focus-visible{outline:2px solid #74f0ca;outline-offset:2px}
+.tp-ctx .tp-ctx-secondary>span{font-size:11px;color:#9fb0c6}
+.tp-ctx .tp-ctx-secondary .tp-ctx-label{display:none}
+.tp-ctx .tp-ctx-net{display:flex;align-items:center;gap:5px;color:#fff;font-size:11px}
+.tp-ctx .tp-ctx-net input{accent-color:#23a86b}
+.tp-ctx .tp-ctx-range{width:100px;max-width:35%;accent-color:#23a86b;cursor:pointer}
+.tp-ctx .tp-ctx-angle{min-width:34px;color:#aebccc;font-size:11px}
+.tp-ctx .tp-ctx-actions{display:flex;align-items:center;gap:2px 4px;flex-wrap:wrap;margin-top:7px}
+.tp-ctx .tp-ctx-actions button{display:inline-flex;align-items:center;width:auto;min-height:30px;border:0;border-radius:6px;padding:5px 6px;background:transparent;color:#f4f7fb;font:600 11px/1.2 system-ui,Arial,sans-serif;white-space:nowrap}
+.tp-ctx .tp-ctx-actions button:disabled{opacity:.4;cursor:not-allowed}
+.tp-ctx .tp-ctx-actions button.tp-ctx-del{color:#ff5b5b!important}
+.tp-piece .tp-disc{width:calc(23px * var(--tp-token-scale,1));height:calc(23px * var(--tp-token-scale,1));font-size:calc(10px * var(--tp-token-scale,1))}
+.tp-piece .tp-disc-gk{width:calc(25px * var(--tp-token-scale,1));height:calc(25px * var(--tp-token-scale,1))}
+.tp-arrow-body{height:var(--tp-line-width,2px)!important;top:50%!important;transform:translateY(-50%);background:var(--tp-ac,#111)!important}
+.tp-arrow-body.tp-arrow-dash{background:repeating-linear-gradient(90deg,var(--tp-ac,#111) 0 7px,transparent 7px 13px)!important}
+.tp-arrow-body.tp-arrow-dot{background:radial-gradient(circle,var(--tp-ac,#111) 45%,transparent 50%) left center / calc(var(--tp-line-width,2px) * 3) var(--tp-line-width,2px) repeat-x!important}
+@media(max-width:600px){.tp-ctx{width:min(360px,calc(100vw - 16px));font-size:12px}.tp-ctx .tp-ctx-actions button{min-height:36px;padding:7px 6px}.tp-ctx button.tp-ctx-choice{min-height:31px}.tp-ctx button.tp-ctx-swatch{flex-basis:22px;width:22px;height:22px;min-width:22px}}
+
+.tp-arrow-body.tp-arrow-finish:after{border-left-width:11px;border-top-width:7px;border-bottom-width:7px;top:50%;transform:translateY(-50%)}
+.tp-ctx .tp-ctx-swatches{flex-wrap:wrap;overflow:visible;gap:5px 4px}
+.tp-ctx input.tp-ctx-number{background:#101b2c!important;color:#fff!important;border:1px solid #374962!important;border-radius:4px!important}
+.tp-arrow-body.tp-arrow-both:before{content:'';position:absolute;left:-1px;top:50%;transform:translateY(-50%);border:5px solid transparent;border-right:8px solid var(--tp-ac,#111)}
+.tp-arrow-body.tp-arrow-both.tp-arrow-finish:before{border-right-width:11px;border-top-width:7px;border-bottom-width:7px}
+.tp-ctx .tp-ctx-width-range{width:64px;max-width:22vw;margin:0 2px;accent-color:#23a86b;cursor:pointer}
+.tp-ctx .tp-ctx-width-output{min-width:15px;color:#aebccc;font-size:10px}
+
+/* Peça de texto: tamanho proporcional ao campo e sem capturar conteúdo como HTML. */
+.tp-tool.text{background:#3d4a5c}
+#mini-football-board{container-type:inline-size}
+.tp-piece.tp-text{white-space:pre;line-height:1.2;font-family:Arial,sans-serif;font-weight:700;text-shadow:0 1px 2px #000b;min-width:8px;min-height:1em}
+.tp-text-label{white-space:pre;pointer-events:none}
+@supports (font-size:1cqw){.tp-piece.tp-text{font-size:calc(var(--tp-text-size, 2.4) * 1cqw)!important}}
+
+.sa-mapa-documento,.sa-mapa-documento *,.sa-mapa-scroll .sa-mapa-pagina,.sa-mapa-scroll .sa-mapa-pagina *{box-sizing:border-box}
+.sa-mapa-documento{width:200mm;background:#fff;color:#153245;font:12px/1.3 Arial,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.sa-mapa-pagina{background:#fff;color:#173b59;padding:3mm;font-family:Arial,sans-serif;break-after:page;page-break-after:always}
+.sa-mapa-pagina:last-child{break-after:auto;page-break-after:auto}
+.sa-mapa-pagina-topo{display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin-bottom:9px;color:#173b59}
+.sa-mapa-pagina-topo small{display:block;color:#4b8d83;font-size:9px;font-weight:800;letter-spacing:.11em}
+.sa-mapa-pagina-topo h2{font:800 19px/1.15 Arial,sans-serif;color:#173b59;margin:3px 0 0;overflow-wrap:anywhere}
+.sa-mapa-pagina-topo>span{font-size:10px;white-space:nowrap;color:#607388}
+.sa-mapa-campo{position:relative;background-color:#247453;background-image:repeating-linear-gradient(0deg,#247453 0,#247453 60px,#226a4d 60px,#226a4d 120px);border:3px solid #173b30;border-radius:15px;padding:12px;overflow:hidden}
+.sa-mapa-linhas{position:absolute;inset:7px;border:1px solid #ffffff75;border-radius:8px;pointer-events:none}
+.sa-mapa-linhas:before{content:"";position:absolute;left:0;right:0;top:50%;border-top:1px solid #ffffff70}
+.sa-mapa-linhas:after{content:"";position:absolute;width:70px;height:70px;border:1px solid #ffffff70;border-radius:50%;left:50%;top:50%;transform:translate(-50%,-50%)}
+.sa-mapa-linhas i{position:absolute;left:28%;right:28%;top:0;height:11%;border:1px solid #ffffff70;border-top:0}
+.sa-mapa-grade{position:relative;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-areas:'pe ata pd' 'mei mei mei' 'vol vol vol' 'le zag ld' 'gol gol gol';gap:8px}
+.sa-mapa-pe{grid-area:pe}.sa-mapa-ata{grid-area:ata}.sa-mapa-pd{grid-area:pd}.sa-mapa-mei{grid-area:mei}.sa-mapa-vol{grid-area:vol}.sa-mapa-le{grid-area:le}.sa-mapa-zag{grid-area:zag}.sa-mapa-ld{grid-area:ld}.sa-mapa-gol{grid-area:gol}
+.sa-mapa-zona{min-width:0;min-height:57px;border:1px solid #ffffff75;border-radius:10px;background:rgba(8,49,37,.32);padding:6px}
+.sa-mapa-zona h3{font:800 10px/1.2 Arial,sans-serif;color:#e6fff2;letter-spacing:.04em;text-transform:uppercase;margin:0 0 5px;text-align:center}
+.sa-mapa-lista{display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-start;gap:5px}
+.sa-mapa-atleta{min-width:0;max-width:100%;display:inline-flex;flex-direction:column;align-items:center;padding:4px 7px;border-radius:9px;border:1px solid #ffffff88;background:#f5fffa;color:#173b59;font:700 10px/1.2 Arial,sans-serif;text-align:center;overflow-wrap:anywhere}
+.sa-mapa-atleta span,.sa-mapa-atleta small{max-width:100%;overflow-wrap:anywhere;word-break:break-word}
+.sa-mapa-atleta small{margin-top:2px;color:#54746a;font:600 9px/1.2 Arial,sans-serif}
+.sa-mapa-vazio{color:#c2dbcb;font:600 12px/1 Arial,sans-serif}
+.sa-mapa-outros{margin-top:9px;border:1px solid #d5e0e6;border-radius:10px;padding:8px;background:#f5f8fa}
+.sa-mapa-outros h3{font:800 11px/1.2 Arial,sans-serif;color:#425b6b;margin:0 0 6px}
+.sa-mapa-outros>div{display:flex;gap:5px;flex-wrap:wrap}.sa-mapa-outros .sa-mapa-atleta{border-color:#cbd8de;background:#fff}
+
+/* Filtro e mapa de atletas: tudo permanece neste dispositivo. */
+.vba-anos-filter{gap:12px;flex-wrap:wrap}
+.vba-anos-filter .sa-atletas-categoria-controles{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}
+.vba-anos-filter .sa-atletas-categoria-controles label{display:flex;align-items:center;gap:7px;font-weight:800}
+.sa-atletas-categoria-controles select{min-height:38px;max-width:210px;padding:7px 10px;border:1px solid #b9ccd5;border-radius:8px;background:#fff;color:#173b59;font:700 12px system-ui,Arial,sans-serif}
+.sa-atletas-categoria-controles button{min-height:38px;padding:8px 12px;border:0;border-radius:8px;background:#0b6e73;color:#fff;font:800 12px system-ui,Arial,sans-serif;cursor:pointer}
+.sa-atletas-categoria-controles button:focus-visible,.sa-atletas-categoria-controles select:focus-visible{outline:3px solid #40b8a8;outline-offset:2px}
+.sa-mapa-overlay,.sa-mapa-export-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:16px;background:#071321b8;z-index:27000}
+.sa-mapa-dialog{width:min(900px,100%);max-height:min(94dvh,1000px);display:flex;flex-direction:column;background:#eef5f2;color:#173b59;border:1px solid #d5e8e2;border-radius:18px;overflow:hidden;box-shadow:0 20px 70px #0007}
+.sa-mapa-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;background:#173b59;color:#fff}
+.sa-mapa-header h2{margin:0;color:#fff;font:800 20px/1.2 system-ui,Arial,sans-serif}.sa-mapa-header p{margin:4px 0 0;color:#c6e8df;font:600 12px/1.2 system-ui,Arial,sans-serif}
+.sa-mapa-header-actions{display:flex;align-items:center;gap:8px}.sa-mapa-header-actions button{border:0;border-radius:8px;cursor:pointer}
+.sa-mapa-export-btn{background:#35b99c;color:#0e3530;padding:10px 12px;font:800 12px system-ui,Arial,sans-serif;white-space:nowrap}.sa-mapa-close{background:#ffffff21;color:#fff;width:36px;height:36px;font:24px/1 Arial,sans-serif}
+.sa-mapa-scroll{overflow:auto;min-height:0;padding:14px}.sa-mapa-scroll .sa-mapa-pagina{max-width:780px;margin:auto;border-radius:12px;box-shadow:0 3px 15px #0d4c3422;padding:12px}
+.sa-mapa-export-overlay{display:flex;z-index:27001}.sa-mapa-export-card{width:min(430px,100%);border-radius:14px;background:#fff;color:#173b59;padding:20px;box-shadow:0 15px 60px #0008;font:14px/1.4 system-ui,Arial,sans-serif}.sa-mapa-export-card h2{margin:0;color:#173b59;font-size:19px}.sa-mapa-export-card p{margin:8px 0 14px}.sa-mapa-export-actions{display:flex;gap:8px;flex-wrap:wrap}.sa-mapa-export-actions button{padding:10px 12px;border:0;border-radius:8px;background:#173b59;color:#fff;font-weight:800;cursor:pointer}.sa-mapa-export-actions button:disabled{opacity:.5;cursor:wait}.sa-mapa-export-actions button[data-action=cancel]{background:#dbe6e7;color:#173b59}.sa-mapa-export-status{color:#a42b2b;font-size:12px}
+@media(max-width:600px){.vba-anos-filter .sa-atletas-categoria-controles{width:100%;margin:0}.sa-atletas-categoria-controles label{flex:1}.sa-atletas-categoria-controles select{flex:1;min-width:0;max-width:none}.sa-mapa-overlay{padding:7px}.sa-mapa-dialog{max-height:96dvh;border-radius:12px}.sa-mapa-header{padding:11px;align-items:flex-start}.sa-mapa-header h2{font-size:16px}.sa-mapa-export-btn{white-space:normal;padding:9px;font-size:11px}.sa-mapa-scroll{padding:7px}.sa-mapa-scroll .sa-mapa-pagina{padding:6px}.sa-mapa-scroll .sa-mapa-campo{padding:8px}.sa-mapa-scroll .sa-mapa-grade{gap:4px}.sa-mapa-scroll .sa-mapa-zona{padding:4px}.sa-mapa-scroll .sa-mapa-zona h3{font-size:8px}.sa-mapa-scroll .sa-mapa-atleta{font-size:9px;padding:3px}.sa-mapa-scroll .sa-mapa-atleta small{font-size:8px}}
+
+
+/* Marca discreta no próprio campo; exportação e impressão usam o campo inteiro. */
+.sa-mapa-watermark{position:relative;text-align:right;margin:8px 3px 0;color:rgba(255,255,255,.68);font:700 10px/1.2 Arial,sans-serif;letter-spacing:.04em}
+.sa-mapa-documento .sa-mapa-zona{min-height:170px}
+
+/* Mapa de posições: campo e identidade visual, sem marca d'água. */
+.sa-mapa-pagina-topo{justify-content:flex-start;align-items:center;min-height:54px}.sa-mapa-logo{display:block;width:52px;height:52px;object-fit:contain;flex:0 0 52px}.sa-mapa-campo{background-size:100% 100%;background-position:center;background-repeat:no-repeat}.sa-mapa-rodape{display:flex;justify-content:flex-end;margin-top:8px}.sa-mapa-rodape img{display:block;width:115px;height:25px;object-fit:contain}
+
+/* Posição acessível por toque, inclusive em telas pequenas. */
+.atleta-posicao-drop-card{max-height:calc(100dvh - 32px);overflow:auto}
+.atleta-posicao-drop-options{grid-template-columns:repeat(2,minmax(0,1fr))}
+.atleta-posicao-drop-options button{min-height:44px}
+
+/* Link externo exibido somente no teste de resistência. */
+#testes-screen .pf-titulo-testes{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px 12px}
+#testes-screen .pf-yoyo-link{display:inline-block;color:#0753ba;background:#fff;text-decoration:underline;text-underline-offset:2px;border-radius:4px;padding:3px 7px;font:700 13px/1.35 Arial,sans-serif;white-space:nowrap}
+#testes-screen .pf-yoyo-link[hidden]{display:none!important}
+#testes-screen .pf-yoyo-link:focus-visible{outline:3px solid #ffe38c;outline-offset:3px}

@@ -10,7 +10,7 @@
     <link rel="apple-touch-icon" href="sa-logo.svg">
     <meta name="theme-color" content="#173b59">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; base-uri 'self'; object-src 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' data: blob:; media-src 'self' data: blob:; frame-src 'self' about: data: blob:; worker-src 'self' blob:">
-    <link rel="stylesheet" href="style.css?v=sa-ficha-atleta-20261107">
+    <link rel="stylesheet" href="style.css?v=sa-yoyo-test-20261107">
     <!-- Bibliotecas empacotadas localmente para uso com ou sem internet -->
     <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
     <script src="vendor/xlsx.full.min.js"></script>
@@ -160,12 +160,14 @@
             <div class="vba-atletas-container">
                 <div class="vba-atletas-title">Atletas — VBolonheze Sports</div>
                 <div class="vba-anos-filter">
-                    <div id="atletas-anos-filter-items" class="sa-dynamic-year-filters"></div>
+                    <div id="atletas-anos-filter-items" class="sa-dynamic-year-filters" aria-label="Anos de nascimento"></div>
+                    <div class="sa-atletas-categoria-controles"><label for="sa-atletas-categoria">Categoria <select id="sa-atletas-categoria" onchange="saAtletasSelecionarCategoria()"><option value="">Todas</option></select></label><button id="sa-atletas-mapa-btn" type="button" onclick="saAbrirMapaAtletas()">Mapa da categoria</button></div>
                 </div>
                 <div class="vba-content-grid">
                     <div class="vba-sidebar-btns">
                         <button class="vba-green-btn" onclick="openAddAthleteModal()">Adicionar Atleta</button>
                         <button class="vba-red-btn" onclick="deleteSelectedAthlete()">Excluir Atleta</button>
+                        <button class="vba-gray-btn" type="button" onclick="mudarPosicaoAtletaSelecionado()">Mudar posição</button>
                         <button class="vba-gray-btn" onclick="openEditAthleteModal()" style="background-color: #f39c12; color: #111;">Editar Atleta</button>
                         <button class="vba-gray-btn" onclick="openFichaAtleta(selectedAthleteIndex)" style="background-color: #173b59; color: #40b8a8;">Ver Ficha Atleta</button>
 </div>
@@ -176,7 +178,7 @@
                         <div class="pos-box"><div class="pos-header">Volantes</div><div class="pos-list" id="list-volantes"></div></div>
                         <div class="pos-box"><div class="pos-header">Meias</div><div class="pos-list" id="list-meias"></div></div>
                         <div class="pos-box"><div class="pos-header">Atacantes</div><div class="pos-list" id="list-atacantes"></div></div>
-                        <div class="pos-box"><div class="pos-header">Extremos</div><div class="pos-list" id="list-extremos"></div></div>
+                        <div class="pos-box"><div class="pos-header">Pontas</div><div class="pos-list" id="list-extremos"></div></div>
                     </div>
                 </div>
             </div>
@@ -187,11 +189,11 @@
             <button id="btn-calculadora-estatico" onclick="abrirCalculadoraAltura()">CALCULADORA</button>
             <div class="pf-container">
                 <div class="pf-tabs-bar">
-                    <button class="pf-tab active" onclick="switchPfTab('antropometricas')">Medidas Antropométricas</button>
-                    <button class="pf-tab" onclick="switchPfTab('resistencia')">Resistência</button>
-                    <button class="pf-tab" onclick="switchPfTab('potencia')">Potência Inferior</button>
-                    <button class="pf-tab" onclick="switchPfTab('velocidade')">Velocidade</button>
-                    <button class="pf-tab" onclick="switchPfTab('agilidade')">Agilidade</button>
+                    <button class="pf-tab active" onclick="switchPfTab('antropometricas', event)">Medidas Antropométricas</button>
+                    <button class="pf-tab" onclick="switchPfTab('resistencia', event)">Resistência</button>
+                    <button class="pf-tab" onclick="switchPfTab('potencia', event)">Potência Inferior</button>
+                    <button class="pf-tab" onclick="switchPfTab('velocidade', event)">Velocidade</button>
+                    <button class="pf-tab" onclick="switchPfTab('agilidade', event)">Agilidade</button>
                     
                     <div class="pf-subtab-group">
                         <select id="pf-eval-select" class="pf-select-control" onchange="renderPfTable()"></select>
@@ -204,7 +206,7 @@
                     <button class="pf-btn-home" onclick="navigateTo('home', event)">Início</button>
                     <button class="pf-btn-close" onclick="navigateTo('home', event)">×</button>
                 </div>
-                <div class="pf-title-bar">VBolonheze Sports — Avaliação Corporal / Testes Físicos</div>
+                <div class="pf-title-bar pf-titulo-testes"><span>VBolonheze Sports — Avaliação Corporal / Testes Físicos</span><a id="pf-yoyo-link" class="pf-yoyo-link" href="https://play.google.com/store/apps/details?id=rudy.android.yoyo&amp;hl=pt_BR" target="_blank" rel="noopener noreferrer" hidden>YOYO TEST</a></div>
                 <div class="pf-table-wrapper">
                     <table id="pf-table">
                         <thead><tr id="pf-header-row"></tr></thead>
@@ -428,21 +430,8 @@
                 <div class="form-row">
                     <label>Posição:</label>
                     <select id="add-posicao">
-                        <option value="Goleiro">Goleiro</option>
-                        <option value="Zagueiro">Zagueiro</option>
-                        <option value="Zagueiro Dir.">Zagueiro Dir.</option>
-                        <option value="Zagueiro Esq.">Zagueiro Esq.</option>
-                        <option value="Lateral Dir.">Lateral Dir.</option>
-                        <option value="Lateral Esq.">Lateral Esq.</option>
-                        <option value="Volante">Volante</option>
-                        <option value="1º Volante">1º Volante</option>
-                        <option value="2º Volante">2º Volante</option>
-                        <option value="Meia" selected>Meia</option>
-                        <option value="Atacante">Atacante</option>
-                        <option value="Ponta Dir.">Ponta Dir.</option>
-                        <option value="Ponta Esq.">Ponta Esq.</option>
-                        <option value="Extremo">Extremo</option>
-                    </select>
+                        <option value="Goleiro">Goleiro</option><option value="Zagueiro">Zagueiro</option><option value="Lateral Dir.">Lateral Dir.</option><option value="Lateral Esq.">Lateral Esq.</option><option value="Volante">Volante</option><option value="Meia" selected>Meia</option><option value="Ponta Dir.">Ponta Dir.</option><option value="Ponta Esq.">Ponta Esq.</option><option value="Atacante">Atacante</option>
+                    </select><small id="sa-posicao-legada" hidden></small>
                 </div>
                 <div class="form-row"><label>Cidade:</label><input type="text" id="add-cidade"></div>
                 <div class="form-row"><label for="add-contato">Contato com DDD:</label><input type="tel" id="add-contato" inputmode="numeric" autocomplete="tel-national" placeholder="Ex.: 43999034204" aria-describedby="sa-contato-ajuda"><small id="sa-contato-ajuda" class="sa-contato-ajuda">Informe DDD + número, sem o 55. Exemplo: 43999034204.</small></div>
@@ -686,6 +675,6 @@
 
     <script src="backup.js?v=sa-atletas-editar-whatsapp-20261107"></script>
     <script src="database-json.js?v=sa-atletas-editar-whatsapp-20261107"></script>
-    <script src="script.js?v=sa-pdf-libs-locais-20261107"></script>
+    <script src="script.js?v=sa-yoyo-test-20261107"></script>
 </body>
 </html>
