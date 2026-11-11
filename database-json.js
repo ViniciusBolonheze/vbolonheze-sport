@@ -233,7 +233,7 @@
             parseFallbackTables(storage, tables);
             parseFallbackFiles(storage, files, new Set());
         }
-        return { tables, preferences: storage, files };
+        return { tables, preferences: storage, files, databaseAccessible: !!db };
     }
 
     function getAthleteCount(tables) {
@@ -551,103 +551,148 @@
         } catch (_) {}
     }
 
+    // O arquivo só é oferecido depois de estar pronto. O segundo toque é um
+    // gesto direto do usuário, mais compatível com navegadores de celular.
+    let preparedExportUrl = null;
+    let preparedExportFile = null;
+    let exportDialog = null;
+
+    function ensureExportDialog() {
+        if (exportDialog) return exportDialog;
+        const overlay = document.createElement('div');
+        overlay.id = 'sa-json-ready-dialog';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-labelledby', 'sa-json-ready-title');
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:rgba(4,18,30,.72);display:flex;align-items:center;justify-content:center;padding:16px;overflow:auto;';
+        const card = document.createElement('section');
+        card.style.cssText = 'box-sizing:border-box;width:min(100%,520px);max-height:90vh;overflow:auto;background:#fff;color:#173b59;border-radius:18px;padding:22px;font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;box-shadow:0 16px 50px #0005;';
+        card.innerHTML = '<h2 id="sa-json-ready-title" style="margin:0 0 8px;font-size:21px">JSON pronto para salvar</h2>' +
+          '<p data-role="summary" style="margin:0 0 10px"></p>' +
+          '<p data-role="warning" style="margin:0 0 12px;color:#92400e;font-weight:600" hidden></p>' +
+          '<p style="margin:0 0 15px">Toque em <strong>Baixar JSON</strong>. Depois, confira na pasta Downloads se o arquivo tem tamanho maior que 0 bytes. O download não altera os dados do sistema.</p>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:10px">' +
+          '<a data-role="download" download="SA_Banco_Completo.json" style="display:inline-block;background:#076d72;color:white;padding:11px 17px;border-radius:9px;text-decoration:none;font-weight:700">Baixar JSON</a>' +
+          '<button type="button" data-role="share" hidden style="border:0;background:#173b59;color:white;padding:11px 17px;border-radius:9px;font:inherit;font-weight:700;cursor:pointer">Compartilhar arquivo</button>' +
+          '<button type="button" data-role="saveas" hidden style="border:1px solid #8ba7b6;background:white;color:#173b59;padding:10px 16px;border-radius:9px;font:inherit;font-weight:700;cursor:pointer">Salvar como…</button>' +
+          '<button type="button" data-role="close" style="border:1px solid #8ba7b6;background:white;color:#173b59;padding:10px 16px;border-radius:9px;font:inherit;cursor:pointer">Fechar</button></div>' +
+          '<p data-role="status" aria-live="polite" style="margin:14px 0 0;font-size:14px"></p>';
+        overlay.appendChild(card);
+        document.body.appendChild(overlay);
+        const at = role => card.querySelector(`[data-role="${role}"]`);
+        const status = at('status');
+        const download = at('download');
+        const share = at('share');
+        const saveas = at('saveas');
+        const close = () => { overlay.style.display = 'none'; };
+        at('close').addEventListener('click', close);
+        overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
+        overlay.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
+        download.addEventListener('click', () => {
+            status.textContent = 'Download solicitado. Verifique o arquivo salvo; o navegador pode pedir confirmação.';
+        });
+        share.addEventListener('click', async () => {
+            try {
+                // File já está criado antes do clique. Nada é enviado sem a escolha do usuário.
+                await navigator.share({ files: [preparedExportFile], title: 'Banco completo SA' });
+                status.textContent = 'Compartilhamento solicitado. Confira o arquivo no destino escolhido.';
+            } catch (error) {
+                if (error && error.name === 'AbortError') status.textContent = 'Compartilhamento cancelado. O arquivo continua disponível para baixar.';
+                else status.textContent = 'Não foi possível compartilhar. Use Baixar JSON ou tente outro navegador.';
+            }
+        });
+        saveas.addEventListener('click', async () => {
+            try {
+                // A janela só é aberta após a geração e em resposta direta a este clique.
+                const handle = await window.showSaveFilePicker({ suggestedName: 'SA_Banco_Completo.json', startIn: 'downloads', types: [{description:'Banco completo SA (JSON)',accept:{'application/json':['.json']}}] });
+                const writable = await handle.createWritable();
+                try { await writable.write(preparedExportFile); await writable.close(); }
+                catch (error) { try { await writable.abort(); } catch (_) {} throw error; }
+                status.textContent = 'Gravação concluída. Confira o arquivo no local escolhido.';
+            } catch (error) {
+                status.textContent = error && error.name === 'AbortError' ? 'Operação cancelada. O arquivo continua disponível para baixar.' : 'Não foi possível gravar. Use Baixar JSON e confira o arquivo no destino.';
+            }
+        });
+        exportDialog = { overlay, summary: at('summary'), warning: at('warning'), status, download, share, saveas };
+        return exportDialog;
+    }
+
+    function showPreparedExport(blob, summary, databaseAccessible) {
+        if (!blob || !blob.size) throw new Error('O JSON preparado está vazio. Nenhum arquivo foi disponibilizado.');
+        const nextUrl = URL.createObjectURL(blob);
+        let nextFile;
+        try { nextFile = new File([blob], 'SA_Banco_Completo.json', { type: 'application/json' }); }
+        catch (_) { nextFile = blob; }
+        const dialog = ensureExportDialog();
+        const oldUrl = preparedExportUrl;
+        preparedExportUrl = nextUrl;
+        preparedExportFile = nextFile;
+        dialog.download.href = nextUrl;
+        dialog.download.download = 'SA_Banco_Completo.json';
+        dialog.summary.textContent = `Arquivo preparado: ${formatBytes(blob.size)} • ${summary.athleteCount} atleta(s) • ${summary.recordCount} registro(s) em tabelas • ${summary.fileCount} arquivo(s)/foto(s).`;
+        const warnings = [];
+        if (!databaseAccessible) warnings.push('Não foi possível acessar o IndexedDB. Confira se todos os dados aparecem no sistema e se as quantidades abaixo correspondem ao esperado.');
+        if (!summary.recordCount && !summary.fileCount) warnings.push('Nenhum registro de tabela ou arquivo foi encontrado. Se você esperava dados, não use este JSON como backup.');
+        dialog.warning.hidden = warnings.length === 0;
+        dialog.warning.textContent = warnings.join(' ');
+        dialog.status.textContent = '';
+        let canShare = false;
+        try { canShare = typeof navigator.share === 'function' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [nextFile] }); } catch (_) {}
+        dialog.share.hidden = !canShare;
+        dialog.saveas.hidden = !(window.isSecureContext && typeof window.showSaveFilePicker === 'function');
+        dialog.overlay.style.display = 'flex';
+        dialog.download.focus();
+        // Não revogar ao clicar ou fechar: o navegador pode ainda estar lendo o Blob.
+        // O URL anterior só é liberado quando um novo backup já estiver pronto.
+        if (oldUrl) setTimeout(() => URL.revokeObjectURL(oldUrl), 120000);
+    }
+
     async function exportDatabase() {
         if (operationInProgress) return false;
         setBusy(true);
         setStatus('Preparando o JSON completo do banco…', 'working');
-
-        // Abre o seletor antes do primeiro await para preservar o gesto do usuário.
-        // Sugere Downloads como pasta inicial; o navegador controla o seletor e o usuário
-        // confirma o nome/local e eventual substituição. Sem suporte, usa download normal.
-        let pickerPromise = null;
-        try {
-            if (window.isSecureContext && typeof window.showSaveFilePicker === 'function') {
-                pickerPromise = window.showSaveFilePicker({
-                    suggestedName: 'SA_Banco_Completo.json',
-                    startIn: 'downloads',
-                    types: [{ description: 'Banco completo SA (JSON)', accept: { 'application/json': ['.json'] } }]
-                }).then(handle => ({ handle }), error => ({ error }));
-            }
-        } catch (error) {
-            console.warn('Seletor de gravação indisponível; será usado o download do navegador:', error);
-        }
-
         try {
             await waitForAppReady();
+            // Aguarda gravações iniciadas antes do clique, sem limpar nem alterar dados.
+            if (typeof saveQueue !== 'undefined' && saveQueue && typeof saveQueue.then === 'function') {
+                if (await saveQueue === false) throw new Error('A última gravação não foi concluída. Confira os dados no sistema antes de exportar.');
+            }
+            if (typeof saLocalTableQueues !== 'undefined' && saLocalTableQueues && typeof saLocalTableQueues.values === 'function') {
+                await Promise.all(Array.from(saLocalTableQueues.values()));
+            }
             const state = await readCurrentState();
+            const summary = summarizeState(state);
+            // Não ofereça uma cópia visivelmente incompleta se há atletas carregados.
+            if (typeof excelData !== 'undefined' && Array.isArray(excelData) && excelData.length > summary.athleteCount) {
+                throw new Error('O banco lido tem menos atletas do que a tela atual. O JSON não foi disponibilizado para evitar uma cópia incompleta. Os dados não foram alterados.');
+            }
             const tables = Object.create(null);
             Object.entries(state.tables).forEach(([rawName, rows]) => { tables[safeTableName(rawName)] = Array.isArray(rows) ? rows : []; });
             const preferences = Object.create(null);
             Object.entries(state.preferences || {}).forEach(([rawKey, value]) => {
                 const key = safeStorageKey(rawKey);
-                if (key.startsWith('db:') || INTERNAL_STORAGE_KEYS.has(key)) return;
-                preferences[key] = String(value);
+                if (!key.startsWith('db:') && !INTERNAL_STORAGE_KEYS.has(key)) preferences[key] = String(value);
             });
             const files = [];
             for (let index = 0; index < state.files.length; index++) {
                 const item = state.files[index];
                 const { bucket, path } = safeFileLocation(item.bucket, item.path);
                 const blob = item.blob instanceof Blob ? item.blob : new Blob([item.blob || ''], { type: item.contentType || 'application/octet-stream' });
-                const data = await blobToBase64(blob);
-                files.push({ bucket, path, contentType: safeContentType(item.contentType || blob.type), data });
+                files.push({ bucket, path, contentType: safeContentType(item.contentType || blob.type), data: await blobToBase64(blob) });
                 if (index % 8 === 7) setStatus(`Preparando arquivos/fotos do banco… ${index + 1} de ${state.files.length}`, 'working');
             }
-            const payload = {
-                format: DATABASE_FORMAT,
-                formatVersion: DATABASE_FORMAT_VERSION,
-                app: 'VBolonheze Sports — SA local',
-                appVersion: '14',
-                exportedAt: new Date().toISOString(),
-                summary: summarizeState(state),
-                tables,
-                preferences,
-                files
-            };
+            const payload = { format: DATABASE_FORMAT, formatVersion: DATABASE_FORMAT_VERSION, app: 'VBolonheze Sports — SA local', appVersion: '14', exportedAt: new Date().toISOString(), summary, tables, preferences, files };
             const json = JSON.stringify(payload);
+            if (!json || json === '{}') throw new Error('Não foi possível preparar um banco JSON válido.');
             const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
-            const filename = 'SA_Banco_Completo.json';
-
-            if (pickerPromise) {
-                let handle = null;
-                const pickerResult = await pickerPromise;
-                if (pickerResult && pickerResult.error) {
-                    if (pickerResult.error && pickerResult.error.name === 'AbortError') {
-                        setStatus('Exportação cancelada. O banco local não foi alterado.', 'info');
-                        return false;
-                    }
-                    console.warn('O seletor de gravação não foi concluído; será usado o download do navegador:', pickerResult.error);
-                } else if (pickerResult) {
-                    handle = pickerResult.handle;
-                }
-                if (handle) {
-                    const writable = await handle.createWritable();
-                    try {
-                        await writable.write(blob);
-                        await writable.close();
-                    } catch (error) {
-                        try { if (typeof writable.abort === 'function') await writable.abort(); } catch (_) {}
-                        throw new Error(`Não foi possível gravar ${filename}. ${error.message || ''}`);
-                    }
-                    setStatus(`Banco completo salvo como ${filename} (${formatBytes(blob.size)}).`, 'success');
-                    return true;
-                }
-            }
-
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = filename;
-            link.style.display = 'none';
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 60000);
-            setStatus(`Download de ${filename} iniciado (${formatBytes(blob.size)}). Se já houver um arquivo com esse nome, o navegador poderá criar uma cópia numerada.`, 'success');
+            showPreparedExport(blob, summary, state.databaseAccessible);
+            setStatus('JSON preparado. Escolha como salvar e confira o arquivo no dispositivo.', 'success');
             return true;
         } catch (error) {
             console.error('Exportação do banco completo:', error);
-            setStatus(error.message || 'Não foi possível gerar o arquivo JSON completo.', 'error');
-            alert(error.message || 'Não foi possível gerar o arquivo JSON completo. Confira o espaço disponível no navegador.');
+            const message = error.message || 'Não foi possível gerar o arquivo JSON completo. Confira o espaço disponível no navegador.';
+            setStatus(message, 'error');
+            alert(message);
             return false;
         } finally {
             setBusy(false);
