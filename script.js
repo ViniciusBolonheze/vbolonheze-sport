@@ -5115,6 +5115,12 @@ function getIndicesListaNovoJogo(){
  const conv=getConvocacaoJogoAtual();
  const convocados=conv?indicesConvocadosDoJogo(conv.dados):[];
  const editados=Array.isArray(window.__jogoAtletasEditIndices)?window.__jogoAtletasEditIndices:[];
+ // Novo jogo com convocação: somente os convocados, inclusive os que não estão nos ativos.
+ // Ao reabrir um jogo novo salvo, preserva a lista efetivamente salva.
+ if(window.__jogoListaSomenteConvocados){
+  return conv?convocados:Array.from(new Set(editados));
+ }
+ // Jogos antigos e jogos sem convocação mantêm o comportamento anterior.
  return Array.from(new Set([...base,...convocados,...editados]));
 }
 function isAtletaConvocadoNoJogo(index){
@@ -5155,10 +5161,15 @@ function renderNovoJogoListaAtletas(){
  const titulo=document.getElementById('novo-jogo-atletas-titulo');
  const info=document.getElementById('jogo-convocacao-info');
  const convocadosSet=new Set(conv?indicesConvocadosDoJogo(conv.dados):Array.from(editConvSet));
- if(titulo)titulo.textContent=(conv||editando)?'Atletas do Jogo — Convocados Grifados':(cfgAtivosJogo===null?'Atletas disponíveis':'Atletas Ativos');
+ if(titulo)titulo.textContent=window.__jogoListaSomenteConvocados?'Atletas convocados':(conv||editando)?'Atletas do Jogo — Convocados Grifados':(cfgAtivosJogo===null?'Atletas disponíveis':'Atletas Ativos');
  if(info){
-  if(conv) info.innerHTML=`Convocação carregada: <strong>${conv.nome}</strong>. Atletas convocados estão grifados em verde.`;
-  else if(editando) info.innerHTML=`Editando: <strong>${editando.nome}</strong>${editando.convocacaoNome?` — Convocação: <strong>${editando.convocacaoNome}</strong>`:''}. Atletas convocados estão grifados em verde.`;
+  if(conv){
+   const detalhes=Array.isArray(conv.dados?.selecionadosDetalhes)?conv.dados.selecionadosDetalhes:[];
+   const naoLocalizados=detalhes.filter(id=>localizarAtletaPorIdentidadeConvocacao(id)<0).length;
+   const mensagem=window.__jogoListaSomenteConvocados?'Somente os atletas convocados são exibidos.':'Atletas convocados estão grifados em verde; os dados do jogo em edição foram preservados.';
+   info.innerHTML=`Convocação carregada: <strong>${escapeHtmlJogos(conv.nome)}</strong>. ${mensagem}${naoLocalizados?` Atenção: ${naoLocalizados} atleta(s) da convocação não foram localizados no cadastro atual.`:(!detalhes.length?' Atenção: a convocação não contém atletas identificáveis.':'')}`;
+  }
+  else if(editando) info.innerHTML=`Editando: <strong>${escapeHtmlJogos(editando.nome)}</strong>${editando.convocacaoNome?` — Convocação: <strong>${escapeHtmlJogos(editando.convocacaoNome)}</strong>`:''}. ${window.__jogoListaSomenteConvocados?'Somente os atletas salvos neste jogo são exibidos.':'Atletas convocados estão grifados em verde.'}${window.__jogoAtletasNaoLocalizados?` Atenção: ${window.__jogoAtletasNaoLocalizados} atleta(s) do jogo não foram localizados no cadastro atual.`:''}`;
   else info.innerHTML='Nenhuma convocação carregada.';
  }
  let indices=getIndicesListaNovoJogo();
@@ -5180,7 +5191,7 @@ function renderNovoJogoListaAtletas(){
   const convocado=convocadosSet.has(i);
   return `<div class="jogo-atleta-row ${convocado?'jogo-convocado':''}" data-index="${i}"><span>${nome}</span><input class="jogo-atleta-minutos" type="number" value="0"><input class="jogo-atleta-gols" type="number" value="0"><input class="jogo-atleta-amarelo" type="number" value="0"><input class="jogo-atleta-vermelho" type="number" value="0"></div>`;
  }).join('');
- lista.innerHTML=`<div class="jogo-atleta-head">Atleta <span>Min.</span><span>Gols</span><span>AM.</span><span>VER.</span></div>${linhas}`;
+ lista.innerHTML=`<div class="jogo-atleta-head">Atleta <span>Min.</span><span>Gols</span><span>AM.</span><span>VER.</span></div>${linhas}${window.__jogoListaSomenteConvocados&&!indices.length?'<p>Nenhum convocado foi localizado no cadastro atual.</p>':''}`;
  aplicarStatsEditadasJogoNasLinhas();
 }
 async function abrirBuscarConvocacaoJogo(){
@@ -5189,7 +5200,7 @@ async function abrirBuscarConvocacaoJogo(){
  if(!data||!data.length){alert('Nenhuma convocação salva encontrada.');return;}
  let m=document.getElementById('buscar-convocacao-jogo-modal');
  if(!m){m=document.createElement('div');m.className='escalacao-overlay';m.id='buscar-convocacao-jogo-modal';document.body.appendChild(m)}
- m.innerHTML=`<div class="buscar-convocacao-jogo-card"><div class="novo-jogo-title"><b>Buscar Convocação</b><button onclick="document.getElementById('buscar-convocacao-jogo-modal').style.display='none'">×</button></div><div class="buscar-convocacao-jogo-body"><p>Selecione uma convocação salva para preencher a data, o adversário e grifar os atletas convocados.</p><select id="convocacao-jogo-select" size="10">${data.map(x=>`<option value="${String(x.nome).replace(/"/g,'&quot;')}">${x.nome}</option>`).join('')}</select><div class="buscar-convocacao-jogo-actions"><button onclick="confirmarBuscarConvocacaoJogo()">Carregar Convocação</button><button onclick="document.getElementById('buscar-convocacao-jogo-modal').style.display='none'">Cancelar</button></div></div></div>`;
+ m.innerHTML=`<div class="buscar-convocacao-jogo-card"><div class="novo-jogo-title"><b>Buscar Convocação</b><button onclick="document.getElementById('buscar-convocacao-jogo-modal').style.display='none'">×</button></div><div class="buscar-convocacao-jogo-body"><p>Selecione uma convocação salva para preencher a data, o adversário e carregar os atletas convocados.</p><select id="convocacao-jogo-select" size="10">${data.map(x=>`<option value="${String(x.nome).replace(/"/g,'&quot;')}">${x.nome}</option>`).join('')}</select><div class="buscar-convocacao-jogo-actions"><button onclick="confirmarBuscarConvocacaoJogo()">Carregar Convocação</button><button onclick="document.getElementById('buscar-convocacao-jogo-modal').style.display='none'">Cancelar</button></div></div></div>`;
  m.style.display='flex';
 }
 async function confirmarBuscarConvocacaoJogo(){
@@ -5198,7 +5209,17 @@ async function confirmarBuscarConvocacaoJogo(){
  const {data,error}=await _saData.from('convocacoes').select('nome,dados').eq('nome',select.value).single();
  if(error||!data){alert('Não foi possível carregar a convocação.');console.error(error);return;}
  const dados=data.dados||{};
+ // Conserva os valores já digitados nas linhas que continuarão visíveis.
+ const stats=window.__jogoStatsEditMap||{};
+ document.querySelectorAll('#novo-jogo-atletas-lista .jogo-atleta-row').forEach(row=>{
+  const valor=seletor=>row.querySelector(seletor)?.value??0;
+  stats[row.dataset.index]={minutos:valor('.jogo-atleta-minutos'),gols:valor('.jogo-atleta-gols'),amarelo:valor('.jogo-atleta-amarelo'),vermelho:valor('.jogo-atleta-vermelho')};
+ });
+ window.__jogoStatsEditMap=stats;
  window.__jogoConvocacaoAtual={nome:data.nome,dados};
+ // Ao importar durante a edição de um jogo já salvo, mantém todas as linhas
+ // existentes para que suas estatísticas não sejam descartadas ao salvar.
+ window.__jogoListaSomenteConvocados=!window.__jogoEditandoAtual;
  const campoData=document.querySelector('#novo-jogo-modal .jogo-data-input');
  const dataFormatada=converterDataConvocacaoParaInput(dados.data||'');
  if(campoData&&dataFormatada)campoData.value=dataFormatada;
@@ -5209,6 +5230,8 @@ async function confirmarBuscarConvocacaoJogo(){
 }
 function novoJogo(){
  window.__jogoConvocacaoAtual=null;
+ window.__jogoListaSomenteConvocados=false;
+ window.__jogoAtletasNaoLocalizados=0;
  window.__jogoEditandoAtual=null;
  window.__jogoAtletasEditIndices=[];
  window.__jogoStatsEditMap={};
@@ -5647,6 +5670,8 @@ async function salvarJogoLocal(){
  const placarAdversario=numeroValorJogo('#novo-jogo-modal .jogo-placar-adversario');
  if(!dataISO)return alert('Informe a data do jogo antes de salvar.');
  if(!adversario)return alert('Informe o adversário antes de salvar.');
+ if(window.__jogoListaSomenteConvocados&&!document.querySelector('#novo-jogo-atletas-lista .jogo-atleta-row'))return alert('Nenhum atleta convocado foi localizado no cadastro atual. Confira a convocação e o cadastro antes de salvar.');
+ if(window.__jogoEditandoAtual&&window.__jogoEditandoAtual.listaSomenteConvocados&&window.__jogoAtletasNaoLocalizados)return alert('Não é possível atualizar este jogo: há atletas salvos que não foram localizados no cadastro atual. Confira o cadastro para preservar os dados do jogo.');
  let numeroJogo;
  try{numeroJogo=editando&&editando.numero_jogo?editando.numero_jogo:await proximoNumeroJogoProfessor(professor);}catch(error){
   console.error(error);
@@ -5668,6 +5693,7 @@ async function salvarJogoLocal(){
   minutos_jogo:numeroValorJogo('#novo-jogo-modal .jogo-minutos-input'),
   placar:{sistema_aberto:placarsa,adversario:placarAdversario},
   convocacao:conv?{nome:conv.nome}:(editando&&editando.convocacaoNome?{nome:editando.convocacaoNome}:null),
+  lista_somente_convocados:window.__jogoListaSomenteConvocados===true,
   atletas:dadosAtletasJogo()
  };
  const payload={professor,numero_jogo:numeroJogo,nome:nomeJogo,dados,atualizado_em:new Date().toISOString()};
@@ -5716,7 +5742,9 @@ function confirmarCarregarJogoSalvo(){
 function aplicarJogoSalvoParaEdicao(jogo){
  const d=jogo.dados||{};
  window.__jogoConvocacaoAtual=null;
- window.__jogoEditandoAtual={id:jogo.id,numero_jogo:jogo.numero_jogo,nome:jogo.nome,convocacaoNome:d.convocacao&&d.convocacao.nome?d.convocacao.nome:''};
+ window.__jogoListaSomenteConvocados=d.lista_somente_convocados===true;
+ window.__jogoAtletasNaoLocalizados=0;
+ window.__jogoEditandoAtual={id:jogo.id,numero_jogo:jogo.numero_jogo,nome:jogo.nome,convocacaoNome:d.convocacao&&d.convocacao.nome?d.convocacao.nome:'',listaSomenteConvocados:d.lista_somente_convocados===true};
  setValorCampoJogo('#novo-jogo-modal .jogo-placar-sa',d.placar?.sistema_aberto??0);
  setValorCampoJogo('#novo-jogo-modal .jogo-placar-adversario',d.placar?.adversario??0);
  setValorCampoJogo('#novo-jogo-modal .jogo-adversario-top',d.adversario||'');
@@ -5730,7 +5758,7 @@ function aplicarJogoSalvoParaEdicao(jogo){
  const convocadosSet=new Set();
  (d.atletas||[]).forEach(a=>{
   const idx=localizarAtletaSalvoEmJogo(a);
-  if(idx<0)return;
+  if(idx<0){window.__jogoAtletasNaoLocalizados++;return;}
   indices.push(idx);
   statsMap[String(idx)]={minutos:a.minutos||0,gols:a.gols||0,amarelo:a.amarelo||0,vermelho:a.vermelho||0};
   if(a.convocado)convocadosSet.add(idx);
