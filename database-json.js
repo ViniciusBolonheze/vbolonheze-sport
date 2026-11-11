@@ -9,6 +9,7 @@
     const INTERNAL_STORAGE_KEYS = new Set(['files_manifest']);
     let operationInProgress = false;
     let reminderShown = false;
+    let entryContext = 'trial';
 
     const byId = id => document.getElementById(id);
     const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
@@ -54,7 +55,7 @@
             overlay.setAttribute('aria-hidden', 'true');
         }
         document.body.classList.remove('sa-database-modal-open');
-        const returnFocus = byId('sa-trial-button');
+        const returnFocus = byId(entryContext === 'active' ? 'sa-database-export-header' : 'sa-trial-button');
         if (returnFocus) returnFocus.focus();
     }
 
@@ -65,12 +66,21 @@
     async function openDatabaseEntry(context = 'trial') {
         try {
             await waitForAppReady();
+            entryContext = context === 'active' ? 'active' : 'trial';
             const title = byId('sa-database-entry-title');
             const eyebrow = byId('sa-database-entry-eyebrow');
-            if (title) title.textContent = context === 'active' ? 'Selecionar banco de dados' : 'Como deseja abrir o SA?';
-            if (eyebrow) eyebrow.textContent = context === 'active' ? 'Banco local' : 'Teste grátis';
+            const intro = byId('sa-database-entry-intro');
+            const cacheOption = document.querySelector('#sa-database-entry-modal .sa-database-option-cache');
+            const exportOption = document.querySelector('#sa-database-entry-modal .sa-database-option-export');
+            if (title) title.textContent = entryContext === 'active' ? 'Importar ou exportar banco' : 'Como deseja abrir o SA?';
+            if (eyebrow) eyebrow.textContent = entryContext === 'active' ? 'Banco local' : 'Teste grátis';
+            if (intro) intro.textContent = entryContext === 'active'
+                ? 'Importe um JSON para substituir o banco atual ou exporte uma cópia completa dos dados deste navegador.'
+                : 'Importe um banco JSON ou abra os dados já salvos neste navegador. Importar substitui o banco atual; abrir os dados salvos não altera o banco.';
+            if (cacheOption) cacheOption.hidden = entryContext === 'active';
+            if (exportOption) exportOption.hidden = entryContext !== 'active';
             openOverlay();
-            setStatus('Escolha importar um JSON, abrir os dados locais salvos ou começar com um banco novo.', 'info');
+            setStatus(entryContext === 'active' ? 'Escolha importar ou exportar o banco JSON.' : 'Escolha importar um JSON ou abrir os dados locais salvos.', 'info');
         } catch (error) {
             console.error('Preparação da tela de banco local:', error);
             setStatus(error.message || 'Não foi possível abrir as opções do banco.', 'error');
@@ -371,6 +381,13 @@
             const text = await readFileText(file);
             const raw = JSON.parse(String(text).replace(/^\uFEFF/, ''));
             const payload = normalizeImportPayload(raw);
+            // Aguarda salvamentos já iniciados, para não sobrescreverem o banco importado.
+            if (typeof saveQueue !== 'undefined' && saveQueue && typeof saveQueue.then === 'function') {
+                if (await saveQueue === false) throw new Error('A última gravação não foi concluída. Confira os dados atuais antes de importar.');
+            }
+            if (typeof saLocalTableQueues !== 'undefined' && saLocalTableQueues && typeof saLocalTableQueues.values === 'function') {
+                await Promise.all(Array.from(saLocalTableQueues.values()));
+            }
             setStatus('Importando o banco completo e abrindo o sistema…', 'working');
             await requestPersistentStorage();
             scheduleAutoEnter('Banco JSON importado. Antes de sair do SA, exporte o banco completo atualizado.');
@@ -573,7 +590,6 @@
           '<p style="margin:0 0 15px">Toque em <strong>Baixar JSON</strong>. Depois, confira na pasta Downloads se o arquivo tem tamanho maior que 0 bytes. O download não altera os dados do sistema.</p>' +
           '<div style="display:flex;flex-wrap:wrap;gap:10px">' +
           '<a data-role="download" download="SA_Banco_Completo.json" style="display:inline-block;background:#076d72;color:white;padding:11px 17px;border-radius:9px;text-decoration:none;font-weight:700">Baixar JSON</a>' +
-          '<button type="button" data-role="share" hidden style="border:0;background:#173b59;color:white;padding:11px 17px;border-radius:9px;font:inherit;font-weight:700;cursor:pointer">Compartilhar arquivo</button>' +
           '<button type="button" data-role="saveas" hidden style="border:1px solid #8ba7b6;background:white;color:#173b59;padding:10px 16px;border-radius:9px;font:inherit;font-weight:700;cursor:pointer">Salvar como…</button>' +
           '<button type="button" data-role="close" style="border:1px solid #8ba7b6;background:white;color:#173b59;padding:10px 16px;border-radius:9px;font:inherit;cursor:pointer">Fechar</button></div>' +
           '<p data-role="status" aria-live="polite" style="margin:14px 0 0;font-size:14px"></p>';
@@ -582,7 +598,6 @@
         const at = role => card.querySelector(`[data-role="${role}"]`);
         const status = at('status');
         const download = at('download');
-        const share = at('share');
         const saveas = at('saveas');
         const close = () => { overlay.style.display = 'none'; };
         at('close').addEventListener('click', close);
@@ -590,16 +605,6 @@
         overlay.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
         download.addEventListener('click', () => {
             status.textContent = 'Download solicitado. Verifique o arquivo salvo; o navegador pode pedir confirmação.';
-        });
-        share.addEventListener('click', async () => {
-            try {
-                // File já está criado antes do clique. Nada é enviado sem a escolha do usuário.
-                await navigator.share({ files: [preparedExportFile], title: 'Banco completo SA' });
-                status.textContent = 'Compartilhamento solicitado. Confira o arquivo no destino escolhido.';
-            } catch (error) {
-                if (error && error.name === 'AbortError') status.textContent = 'Compartilhamento cancelado. O arquivo continua disponível para baixar.';
-                else status.textContent = 'Não foi possível compartilhar. Use Baixar JSON ou tente outro navegador.';
-            }
         });
         saveas.addEventListener('click', async () => {
             try {
@@ -613,7 +618,7 @@
                 status.textContent = error && error.name === 'AbortError' ? 'Operação cancelada. O arquivo continua disponível para baixar.' : 'Não foi possível gravar. Use Baixar JSON e confira o arquivo no destino.';
             }
         });
-        exportDialog = { overlay, summary: at('summary'), warning: at('warning'), status, download, share, saveas };
+        exportDialog = { overlay, summary: at('summary'), warning: at('warning'), status, download, saveas };
         return exportDialog;
     }
 
@@ -636,9 +641,6 @@
         dialog.warning.hidden = warnings.length === 0;
         dialog.warning.textContent = warnings.join(' ');
         dialog.status.textContent = '';
-        let canShare = false;
-        try { canShare = typeof navigator.share === 'function' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [nextFile] }); } catch (_) {}
-        dialog.share.hidden = !canShare;
         dialog.saveas.hidden = !(window.isSecureContext && typeof window.showSaveFilePicker === 'function');
         dialog.overlay.style.display = 'flex';
         dialog.download.focus();
@@ -751,6 +753,7 @@
     window.saDatabaseOpenBrowserCache = openBrowserCache;
     window.saDatabaseStartEmpty = startEmptyDatabase;
     window.saDatabaseExport = exportDatabase;
+    window.saDatabaseExportFromMenu = () => { if (operationInProgress) return; closeOverlay(); return exportDatabase(); };
     window.saDatabaseShowExportReminder = showExportReminder;
     window.saDatabaseCloseExportReminder = closeExportReminder;
     window.saDatabaseSetHomeStatus = setStatus;
